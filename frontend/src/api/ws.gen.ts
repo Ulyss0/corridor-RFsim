@@ -12,6 +12,10 @@ export type Actor = string;
 export type Jammer = string;
 export type StartS = number;
 export type EndS = number;
+/**
+ * Mission the cut is asked for.
+ */
+export type Mission = string | null;
 export type Type1 = "cut.cancel";
 export type Actor1 = string;
 export type Cut = string;
@@ -20,12 +24,14 @@ export type Actor2 = string;
 export type Cut1 = string;
 export type Type3 = "mission.launch";
 export type Actor3 = string;
+export type Mission1 = string;
 export type Type4 = "clock.set";
 export type Actor4 = string;
 export type Factor = number | null;
 export type Paused = boolean | null;
 export type Type5 = "inject.delay";
 export type Actor5 = string;
+export type Mission2 = string;
 export type DelayS = number;
 export type Seq = number;
 export type SimTimeS = number;
@@ -49,8 +55,11 @@ export type StartS1 = number;
 export type EndS1 = number;
 export type Status = "scheduled" | "confirmed";
 export type RequestedBy = string;
+/**
+ * Mission the cut was asked for; None: from the scenario.
+ */
+export type RequestedFor = string | null;
 export type Type7 = "cut.cancelled";
-export type Cut3 = string;
 export type Type8 = "cut.confirmed";
 export type Type9 = "clock";
 export type SimTimeS1 = number;
@@ -60,6 +69,7 @@ export type SimTimeS1 = number;
 export type Factor1 = number;
 export type Paused1 = boolean;
 export type Type10 = "mission.status";
+export type Mission3 = string;
 export type Status1 = "planned" | "flying" | "arrived";
 export type Type11 = "notification";
 /**
@@ -70,6 +80,10 @@ export type Text = string;
 export type Command1 = "cut.confirm";
 export type Cut4 = string;
 export type Type12 = "plan.updated";
+export type Mission4 = string;
+/**
+ * Grows by one per plan request of this mission.
+ */
 export type Revision = number;
 export type Status2 = "preview" | "approved" | "fallback" | "baseline";
 /**
@@ -98,6 +112,7 @@ export type Action = "fly" | "hover" | "ground";
 export type BaselineRoute = RoutePoint[];
 export type OptimisedRoute = RoutePoint[];
 export type Type13 = "drone.state";
+export type Mission5 = string;
 export type Lat1 = number;
 export type Lon1 = number;
 export type Action1 = "fly" | "hover" | "ground";
@@ -117,6 +132,8 @@ export type Type14 = "jammer.restarted";
 export type Jammer2 = string;
 export type Cut5 = string;
 export type Type15 = "snapshot";
+export type Callsign = string;
+export type Role = "command" | "pilot" | "operator";
 /**
  * Wall-clock time of simulated t = 0.
  */
@@ -125,16 +142,40 @@ export type StartTime = string;
  * The control link is lost where J/S at the drone reaches this value.
  */
 export type JsThresholdDb = number;
+/**
+ * Link EIRP, watts.
+ */
+export type EirpW = number;
+/**
+ * Distance from the drone to its pilot.
+ */
+export type RangeM = number;
+/**
+ * Callsign of the command post, which sees all.
+ */
+export type CommandCallsign = string;
 export type Id1 = string;
 export type OperatorCallsign = string;
 /**
- * Effective isotropic radiated power, watts.
+ * Effective isotropic radiated power, watts; in the main beam if `antenna`.
  */
-export type EirpW = number;
+export type EirpW1 = number;
 /**
  * @minItems 1
  */
 export type Bands = [string, ...string[]];
+/**
+ * Axis of the main beam, degrees clockwise from north.
+ */
+export type AzimuthDeg = number;
+/**
+ * Full width of the main beam.
+ */
+export type BeamwidthDeg = number;
+/**
+ * Gain outside the main beam, relative to the main beam (e.g. -20).
+ */
+export type SidelobeDb = number;
 export type StartS2 = number;
 export type EndS2 = number;
 export type Cuts = PlannedCut[];
@@ -150,12 +191,16 @@ export type Id3 = string;
 /**
  * Estimated EIRP, watts.
  */
-export type EirpW1 = number;
+export type EirpW2 = number;
 /**
  * @minItems 1
  */
 export type Bands1 = [string, ...string[]];
 export type EnemyThreats = (EnemyRadar | EnemyJammer)[];
+/**
+ * @minItems 1
+ */
+export type Missions = [Mission6, ...Mission6[]];
 export type Id4 = string;
 export type DroneId = string;
 /**
@@ -176,9 +221,6 @@ export type BatteryMaxS = number;
  * Earliest departure.
  */
 export type DepartureS = number;
-export type CellM = number;
-export type Cols = number;
-export type Rows = number;
 /**
  * Id of the jammer or radar.
  */
@@ -193,11 +235,31 @@ export type Forbidden = "inside" | "outside";
  */
 export type Ring = Position[];
 /**
- * Zones that matter to the mission, see domain.zones.
+ * Mission-independent footprints, see domain.zones. None for a pilot.
+ */
+export type NominalZones = Zone[];
+export type Mission7 = string;
+export type CellM = number;
+export type Cols = number;
+export type Rows = number;
+/**
+ * Zones of the concerned threats, for this pilot.
  */
 export type Zones = Zone[];
+/**
+ * Friendly jammers that concern the mission.
+ */
+export type Jammers = string[];
+/**
+ * Enemy threats that concern the mission.
+ */
+export type Threats = string[];
+export type Status3 = "planned" | "flying" | "arrived";
+export type Missions1 = MissionView[];
+/**
+ * Cuts of the jammers in view.
+ */
 export type Cuts1 = Cut2[];
-export type MissionStatus = "planned" | "flying" | "arrived";
 export type Type18 = "ack";
 export type ReqId1 = string;
 export type Type19 = "error";
@@ -232,6 +294,7 @@ export interface ScheduleCut {
   jammer: Jammer;
   start_s: StartS;
   end_s: EndS;
+  mission?: Mission;
 }
 /**
  * This interface was referenced by `CorridorWs`'s JSON-Schema
@@ -252,12 +315,15 @@ export interface ConfirmCut {
   cut: Cut1;
 }
 /**
+ * Only the mission pilot or the command post may launch.
+ *
  * This interface was referenced by `CorridorWs`'s JSON-Schema
  * via the `definition` "LaunchMission".
  */
 export interface LaunchMission {
   type: Type3;
   actor: Actor3;
+  mission: Mission1;
 }
 /**
  * This interface was referenced by `CorridorWs`'s JSON-Schema
@@ -278,6 +344,7 @@ export interface SetClock {
 export interface InjectDelay {
   type: Type5;
   actor: Actor5;
+  mission: Mission2;
   delay_s: DelayS;
 }
 /**
@@ -312,6 +379,7 @@ export interface Cut2 {
   end_s: EndS1;
   status: Status;
   requested_by: RequestedBy;
+  requested_for: RequestedFor;
 }
 /**
  * This interface was referenced by `CorridorWs`'s JSON-Schema
@@ -320,6 +388,20 @@ export interface Cut2 {
 export interface CutCancelled {
   type: Type7;
   cut: Cut3;
+}
+/**
+ * A window during which a friendly jammer is off.
+ *
+ * Only a confirmed cut may be used by the planner for the approved route.
+ */
+export interface Cut3 {
+  id: Id;
+  jammer: Jammer1;
+  start_s: StartS1;
+  end_s: EndS1;
+  status: Status;
+  requested_by: RequestedBy;
+  requested_for: RequestedFor;
 }
 /**
  * This interface was referenced by `CorridorWs`'s JSON-Schema
@@ -352,6 +434,7 @@ export interface ClockState {
  */
 export interface MissionStatusChanged {
   type: Type10;
+  mission: Mission3;
   status: Status1;
 }
 /**
@@ -382,6 +465,7 @@ export interface NotificationAction {
  */
 export interface PlanUpdated {
   type: Type12;
+  mission: Mission4;
   revision: Revision;
   status: Status2;
   metrics: PlanMetrics;
@@ -418,6 +502,7 @@ export interface RoutePoint {
  */
 export interface DroneState {
   type: Type13;
+  mission: Mission5;
   position: Position;
   action: Action1;
   battery_used_pct: BatteryUsedPct;
@@ -444,38 +529,51 @@ export interface JammerRestarted {
   cut: Cut5;
 }
 /**
- * Full state, sent on connect. Enough to render any instant on the client.
+ * State seen by one client, sent on connect. Enough to render any instant on it.
  *
  * This interface was referenced by `CorridorWs`'s JSON-Schema
  * via the `definition` "Snapshot".
  */
 export interface Snapshot {
   type: Type15;
+  viewer: Viewer;
   scenario: Scenario;
-  grid: Grid;
-  zones: Zones;
+  nominal_zones: NominalZones;
+  missions: Missions1;
   clock: ClockState;
   cuts: Cuts1;
-  mission_status: MissionStatus;
-  /**
-   * Latest plan; None until the first one.
-   */
-  plan: PlanUpdated | null;
-  /**
-   * Latest drone state; None before take-off.
-   */
-  drone: DroneState | null;
 }
 /**
+ * Who is connected: the callsign the client gave, and its role in the scenario.
+ *
  * This interface was referenced by `CorridorWs`'s JSON-Schema
- * via the `definition` "Scenario".
+ * via the `definition` "Viewer".
+ */
+export interface Viewer {
+  callsign: Callsign;
+  role: Role;
+}
+/**
+ * Only the jammers, threats and missions in view.
  */
 export interface Scenario {
   start_time: StartTime;
   js_threshold_db: JsThresholdDb;
+  reference_link: ReferenceLink;
+  command_callsign: CommandCallsign;
   friendly_jammers: FriendlyJammers;
   enemy_threats: EnemyThreats;
-  mission: Mission;
+  missions: Missions;
+}
+/**
+ * Control link assumed for the nominal footprint of a jammer, seen without any mission.
+ *
+ * This interface was referenced by `CorridorWs`'s JSON-Schema
+ * via the `definition` "ReferenceLink".
+ */
+export interface ReferenceLink {
+  eirp_w: EirpW;
+  range_m: RangeM;
 }
 /**
  * This interface was referenced by `CorridorWs`'s JSON-Schema
@@ -485,9 +583,26 @@ export interface FriendlyJammer {
   id: Id1;
   operator_callsign: OperatorCallsign;
   pos: Position;
-  eirp_w: EirpW;
+  eirp_w: EirpW1;
   bands: Bands;
+  /**
+   * None: omnidirectional.
+   */
+  antenna: Antenna | null;
   cuts: Cuts;
+}
+/**
+ * Directional antenna, seen from above: a main beam with a hard edge, sidelobes elsewhere.
+ *
+ * The cone is horizontal only: the planner is 2D plus time.
+ *
+ * This interface was referenced by `CorridorWs`'s JSON-Schema
+ * via the `definition` "Antenna".
+ */
+export interface Antenna {
+  azimuth_deg: AzimuthDeg;
+  beamwidth_deg: BeamwidthDeg;
+  sidelobe_db: SidelobeDb;
 }
 /**
  * This interface was referenced by `CorridorWs`'s JSON-Schema
@@ -515,14 +630,14 @@ export interface EnemyJammer {
   type: Type17;
   id: Id3;
   pos: Position;
-  eirp_w: EirpW1;
+  eirp_w: EirpW2;
   bands: Bands1;
 }
 /**
  * This interface was referenced by `CorridorWs`'s JSON-Schema
  * via the `definition` "Mission".
  */
-export interface Mission {
+export interface Mission6 {
   id: Id4;
   drone_id: DroneId;
   pilot_callsign: PilotCallsign;
@@ -535,7 +650,43 @@ export interface Mission {
   departure_s: DepartureS;
 }
 /**
- * Planning grid, derived from the scenario positions.
+ * This interface was referenced by `CorridorWs`'s JSON-Schema
+ * via the `definition` "Zone".
+ */
+export interface Zone {
+  threat: Threat;
+  kind: Kind;
+  forbidden: Forbidden;
+  ring: Ring;
+}
+/**
+ * This interface was referenced by `CorridorWs`'s JSON-Schema
+ * via the `definition` "MissionView".
+ */
+export interface MissionView {
+  constraints: MissionConstraints;
+  status: Status3;
+  /**
+   * Latest plan; None until the first one.
+   */
+  plan: PlanUpdated | null;
+  /**
+   * Latest drone state; None before take-off.
+   */
+  drone: DroneState | null;
+}
+/**
+ * Grid, zones for this pilot, concerned jammers and threats.
+ */
+export interface MissionConstraints {
+  mission: Mission7;
+  grid: Grid;
+  zones: Zones;
+  jammers: Jammers;
+  threats: Threats;
+}
+/**
+ * Planning grid of the mission.
  */
 export interface Grid {
   origin: Position1;
@@ -549,16 +700,6 @@ export interface Grid {
 export interface Position1 {
   lat: Lat1;
   lon: Lon1;
-}
-/**
- * This interface was referenced by `CorridorWs`'s JSON-Schema
- * via the `definition` "Zone".
- */
-export interface Zone {
-  threat: Threat;
-  kind: Kind;
-  forbidden: Forbidden;
-  ring: Ring;
 }
 /**
  * This interface was referenced by `CorridorWs`'s JSON-Schema
@@ -586,4 +727,30 @@ export interface Grid1 {
   cell_m: CellM;
   cols: Cols;
   rows: Rows;
+}
+/**
+ * What constrains one mission: its grid, its zones, and the threats behind them.
+ *
+ * This interface was referenced by `CorridorWs`'s JSON-Schema
+ * via the `definition` "MissionConstraints".
+ */
+export interface MissionConstraints1 {
+  mission: Mission7;
+  grid: Grid;
+  zones: Zones;
+  jammers: Jammers;
+  threats: Threats;
+}
+/**
+ * This interface was referenced by `CorridorWs`'s JSON-Schema
+ * via the `definition` "Scenario".
+ */
+export interface Scenario1 {
+  start_time: StartTime;
+  js_threshold_db: JsThresholdDb;
+  reference_link: ReferenceLink;
+  command_callsign: CommandCallsign;
+  friendly_jammers: FriendlyJammers;
+  enemy_threats: EnemyThreats;
+  missions: Missions;
 }

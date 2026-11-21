@@ -1,12 +1,14 @@
-// Timeline: one row per friendly jammer (its cuts), one row for the drone (planned route, by
-// phase) and one for the detour it is compared with. The orange cursor follows live time; drag
-// it to scrub (map follows), "Back to live" resets.
+// Timeline: one row per friendly jammer in view (its cuts) + one row per drone in view (its
+// planned route, by phase).
+// The orange cursor follows live time; drag it to scrub (map follows), "Back to live" resets.
 import { useEffect, useRef } from 'react'
+import { ActionIcon, Button, Group, Text, Tooltip } from '@mantine/core'
 import { Timeline } from 'vis-timeline/standalone'
 import 'vis-timeline/styles/vis-timeline-graph2d.min.css'
 import { clockLabel, type Phase, routePhases } from '../domain/view'
 import { useLiveSimTime } from '../hooks/useSimNow'
 import { useStore } from '../store'
+import { CrosshairIcon, RotateCcwIcon, ZoomInIcon, ZoomOutIcon } from './Icons'
 
 const CURSOR = 'cursor'
 
@@ -20,8 +22,7 @@ function fromTl(startTime: string, d: Date): number {
   const base = Date.parse(startTime)
   return (d.getTime() - new Date(base).getTimezoneOffset() * 60_000 - base) / 1000
 }
-const DRONE_GROUP = '__drone__'
-const DETOUR_GROUP = '__detour__'
+const droneGroup = (mission: string) => `__drone__${mission}`
 
 interface Item {
   id: string
@@ -38,10 +39,21 @@ export function TimelinePanel() {
   const timeline = useRef<Timeline | null>(null)
   const snapshot = useStore((s) => s.snapshot)
   const cuts = useStore((s) => s.cuts)
-  const plan = useStore((s) => s.plan)
+  const missions = useStore((s) => s.missions)
   const viewTimeS = useStore((s) => s.viewTimeS)
+  const setViewTime = useStore((s) => s.setViewTime)
   const live = useLiveSimTime(4)
   const start = snapshot?.scenario.start_time
+
+  const fitTimeline = () => {
+    if (!snapshot) return
+    const st = snapshot.scenario.start_time
+    const endS = Math.max(
+      1800,
+      ...snapshot.scenario.missions.map((m) => m.battery_max_s + m.departure_s),
+    )
+    timeline.current?.setWindow(toTl(st, 0), toTl(st, endS), { animation: true })
+  }
 
   // Create once the scenario is known (groups and time origin come from it).
   useEffect(() => {
@@ -49,12 +61,12 @@ export function TimelinePanel() {
     const st = snapshot.scenario.start_time
     const groups = [
       ...snapshot.scenario.friendly_jammers.map((j) => ({ id: j.id, content: `${j.id} · ${j.operator_callsign}` })),
-      { id: DRONE_GROUP, content: snapshot.scenario.mission.drone_id },
-      { id: DETOUR_GROUP, content: 'Detour' },
+      ...snapshot.scenario.missions.map((m) => ({ id: droneGroup(m.id), content: `${m.drone_id} (${m.id})` })),
     ]
+    const horizon = Math.max(1800, ...snapshot.scenario.missions.map((m) => m.battery_max_s + m.departure_s))
     const tl = new Timeline(container.current, [], groups, {
       start: toTl(st, 0),
-      end: toTl(st, Math.max(1800, snapshot.scenario.mission.battery_max_s + snapshot.scenario.mission.departure_s)),
+      end: toTl(st, horizon),
       stack: false,
       showCurrentTime: false,
       zoomMin: 60_000,
@@ -66,6 +78,11 @@ export function TimelinePanel() {
     tl.addCustomTime(toTl(st, 0), CURSOR)
     tl.on('timechange', (props: { id: string; time: Date }) => {
       if (props.id === CURSOR) useStore.getState().setViewTime(Math.max(0, fromTl(st, props.time)))
+    })
+    tl.on('click', (props: { time?: Date; what?: string }) => {
+      if (props.time && (props.what === 'background' || props.what === 'axis' || props.what === 'item')) {
+        useStore.getState().setViewTime(Math.max(0, fromTl(st, props.time)))
+      }
     })
     timeline.current = tl
     return () => {
@@ -86,7 +103,6 @@ export function TimelinePanel() {
       className: `cut cut-${c.status}`,
       title: `${c.id} by ${c.requested_by}`,
     }))
-    const zones = snapshot?.zones ?? []
     const phaseItems = (group: string, phases: Phase[], prefix: string): Item[] =>
       phases
         .filter((ph) => ph.end > ph.start)
@@ -98,18 +114,21 @@ export function TimelinePanel() {
             start: toTl(start, ph.start),
             end: toTl(start, ph.end),
             content: label,
-            className: `seg seg-${ph.kind}${group === DETOUR_GROUP ? ' seg-detour' : ''}`,
+            className: `seg seg-${ph.kind}`,
             title: `${label}: ${clockLabel(start, ph.start)} → ${clockLabel(start, ph.end)}`,
           }
         })
-    if (plan) {
-      next.push(...phaseItems(DRONE_GROUP, routePhases(plan.optimised_route, zones), 'opt'))
-      if (plan.status === 'preview' || plan.status === 'approved') {
-        next.push(...phaseItems(DETOUR_GROUP, routePhases(plan.baseline_route, zones), 'base'))
+
+    for (const [mission, view] of Object.entries(missions)) {
+      const route = view.plan?.optimised_route ?? []
+      if (route.length > 0) {
+        const m = snapshot?.missions.find((sm) => sm.constraints.mission === mission)
+        const zones = m?.constraints.zones ?? []
+        next.push(...phaseItems(droneGroup(mission), routePhases(route, zones), `opt-${mission}`))
       }
     }
     timeline.current?.setItems(next)
-  }, [cuts, plan, start, snapshot])
+  }, [cuts, missions, start, snapshot])
 
   // Cursor follows live time unless the user is scrubbing.
   useEffect(() => {
@@ -117,5 +136,103 @@ export function TimelinePanel() {
     timeline.current.setCustomTime(toTl(start, viewTimeS ?? live), CURSOR)
   }, [live, viewTimeS, start])
 
-  return <div ref={container} className="timeline" />
+  return (
+    <div className="timeline-shell">
+      <Group className="timeline-header" justify="space-between" wrap="nowrap">
+        <Group gap="md" wrap="nowrap">
+          <Text size="11px" fw={700} c="dimmed" style={{ letterSpacing: '0.06em' }}>
+            4D SCHEDULE &amp; ROUTE TIMELINE
+          </Text>
+          <Group gap="xs" wrap="nowrap" visibleFrom="sm">
+            <TimelineChip color="#f08c00" label="Scheduled cut" />
+            <TimelineChip color="#2f9e44" label="Confirmed cut" />
+            <TimelineChip color="#495057" label="Ground wait" />
+            <TimelineChip color="#22b8cf" label="Fly" />
+            <TimelineChip color="#1971c2" label="Hover" />
+            <TimelineChip color="#2f9e44" borderColor="#8ce99a" label="Zone crossing" />
+            <TimelineChip color="transparent" borderColor="#adb5bd" label="Detour" dashed />
+          </Group>
+        </Group>
+
+        <Group gap={4} wrap="nowrap">
+          {viewTimeS !== null && (
+            <Button
+              size="compact-xs"
+              variant="light"
+              color="orange"
+              leftSection={<RotateCcwIcon size={11} />}
+              onClick={() => setViewTime(null)}
+            >
+              Back to live
+            </Button>
+          )}
+          <Tooltip label="Zoom in">
+            <ActionIcon
+              size="xs"
+              variant="subtle"
+              color="gray"
+              aria-label="Zoom timeline in"
+              onClick={() => timeline.current?.zoomIn(0.4)}
+            >
+              <ZoomInIcon size={13} />
+            </ActionIcon>
+          </Tooltip>
+          <Tooltip label="Zoom out">
+            <ActionIcon
+              size="xs"
+              variant="subtle"
+              color="gray"
+              aria-label="Zoom timeline out"
+              onClick={() => timeline.current?.zoomOut(0.4)}
+            >
+              <ZoomOutIcon size={13} />
+            </ActionIcon>
+          </Tooltip>
+          <Tooltip label="Fit full mission timeline">
+            <ActionIcon
+              size="xs"
+              variant="subtle"
+              color="gray"
+              aria-label="Fit timeline"
+              onClick={fitTimeline}
+            >
+              <CrosshairIcon size={13} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
+      </Group>
+
+      <div ref={container} className="timeline" />
+    </div>
+  )
+}
+
+interface TimelineChipProps {
+  readonly color: string
+  readonly borderColor?: string
+  readonly label: string
+  readonly dashed?: boolean
+}
+
+function TimelineChip({ color, borderColor, label, dashed }: TimelineChipProps) {
+  const borderStyle = dashed ? 'dashed' : 'solid'
+  const border = borderColor ? `1px ${borderStyle} ${borderColor}` : undefined
+  return (
+    <Group gap={4} wrap="nowrap">
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: 2,
+          background: color,
+          border,
+          display: 'inline-block',
+          flexShrink: 0,
+        }}
+      />
+      <Text size="10px" c="dimmed">
+        {label}
+      </Text>
+    </Group>
+  )
 }

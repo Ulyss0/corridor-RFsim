@@ -3,8 +3,10 @@
 Client to server: ``{"req_id": "...", "command": {"type": "cut.schedule", ...}}``.
 Server to client: ``{"seq": 42, "sim_time_s": 900.0, "payload": {"type": "...", ...}}``.
 
-Domain events go out as they are, wrapped in the envelope. ``seq`` grows by one per broadcast
-event; ``snapshot``, ``ack`` and ``error`` carry the current ``seq`` without incrementing it.
+Domain events go out as they are, wrapped in the envelope, to the clients allowed to see them
+(``corridor.adapters.ws.audience``). ``seq`` grows by one per broadcast event, seen or not, so a
+client may see gaps; ``snapshot``, ``ack`` and ``error`` carry the current ``seq`` without
+incrementing it.
 """
 
 from __future__ import annotations
@@ -13,27 +15,36 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
+from corridor.adapters.ws.audience import Viewer
 from corridor.domain.commands import Command
 from corridor.domain.events import DroneState, Event, PlanUpdated
-from corridor.domain.geo import Grid
 from corridor.domain.model import Model
 from corridor.domain.scenario import Scenario
 from corridor.domain.state import ClockState, Cut, MissionStatus
-from corridor.domain.zones import Zone
+from corridor.domain.zones import MissionConstraints, Zone
+
+
+class MissionView(Model):
+    constraints: MissionConstraints = Field(
+        description="Grid, zones for this pilot, concerned jammers and threats."
+    )
+    status: MissionStatus
+    plan: PlanUpdated | None = Field(description="Latest plan; None until the first one.")
+    drone: DroneState | None = Field(description="Latest drone state; None before take-off.")
 
 
 class Snapshot(Model):
-    """Full state, sent on connect. Enough to render any instant on the client."""
+    """State seen by one client, sent on connect. Enough to render any instant on it."""
 
     type: Literal["snapshot"] = "snapshot"
-    scenario: Scenario
-    grid: Grid = Field(description="Planning grid, derived from the scenario positions.")
-    zones: list[Zone] = Field(description="Zones that matter to the mission, see domain.zones.")
+    viewer: Viewer
+    scenario: Scenario = Field(description="Only the jammers, threats and missions in view.")
+    nominal_zones: list[Zone] = Field(
+        description="Mission-independent footprints, see domain.zones. None for a pilot."
+    )
+    missions: list[MissionView]
     clock: ClockState
-    cuts: list[Cut]
-    mission_status: MissionStatus
-    plan: PlanUpdated | None = Field(description="Latest plan; None until the first one.")
-    drone: DroneState | None = Field(description="Latest drone state; None before take-off.")
+    cuts: list[Cut] = Field(description="Cuts of the jammers in view.")
 
 
 class Ack(Model):

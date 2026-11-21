@@ -36,6 +36,39 @@
       "title": "Ack",
       "type": "object"
     },
+    "Antenna": {
+      "additionalProperties": false,
+      "description": "Directional antenna, seen from above: a main beam with a hard edge, sidelobes elsewhere.\n\nThe cone is horizontal only: the planner is 2D plus time.",
+      "properties": {
+        "azimuth_deg": {
+          "description": "Axis of the main beam, degrees clockwise from north.",
+          "exclusiveMaximum": 360,
+          "minimum": 0,
+          "title": "Azimuth Deg",
+          "type": "number"
+        },
+        "beamwidth_deg": {
+          "description": "Full width of the main beam.",
+          "exclusiveMinimum": 0,
+          "maximum": 180,
+          "title": "Beamwidth Deg",
+          "type": "number"
+        },
+        "sidelobe_db": {
+          "description": "Gain outside the main beam, relative to the main beam (e.g. -20).",
+          "maximum": 0,
+          "title": "Sidelobe Db",
+          "type": "number"
+        }
+      },
+      "required": [
+        "azimuth_deg",
+        "beamwidth_deg",
+        "sidelobe_db"
+      ],
+      "title": "Antenna",
+      "type": "object"
+    },
     "CancelCut": {
       "additionalProperties": false,
       "properties": {
@@ -213,6 +246,19 @@
         "requested_by": {
           "title": "Requested By",
           "type": "string"
+        },
+        "requested_for": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Mission the cut was asked for; None: from the scenario.",
+          "title": "Requested For"
         }
       },
       "required": [
@@ -221,7 +267,8 @@
         "start_s",
         "end_s",
         "status",
-        "requested_by"
+        "requested_by",
+        "requested_for"
       ],
       "title": "Cut",
       "type": "object"
@@ -236,8 +283,8 @@
           "type": "string"
         },
         "cut": {
-          "title": "Cut",
-          "type": "string"
+          "$ref": "#/$defs/Cut",
+          "description": "The cut as it was before cancellation."
         }
       },
       "required": [
@@ -297,6 +344,10 @@
           "title": "Type",
           "type": "string"
         },
+        "mission": {
+          "title": "Mission",
+          "type": "string"
+        },
         "position": {
           "$ref": "#/$defs/Position"
         },
@@ -327,6 +378,7 @@
       },
       "required": [
         "type",
+        "mission",
         "position",
         "action",
         "battery_used_pct",
@@ -458,7 +510,7 @@
           "$ref": "#/$defs/Position"
         },
         "eirp_w": {
-          "description": "Effective isotropic radiated power, watts.",
+          "description": "Effective isotropic radiated power, watts; in the main beam if `antenna`.",
           "exclusiveMinimum": 0,
           "title": "Eirp W",
           "type": "number"
@@ -470,6 +522,18 @@
           "minItems": 1,
           "title": "Bands",
           "type": "array"
+        },
+        "antenna": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Antenna"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "None: omnidirectional."
         },
         "cuts": {
           "items": {
@@ -485,6 +549,7 @@
         "pos",
         "eirp_w",
         "bands",
+        "antenna",
         "cuts"
       ],
       "title": "FriendlyJammer",
@@ -536,6 +601,10 @@
           "title": "Actor",
           "type": "string"
         },
+        "mission": {
+          "title": "Mission",
+          "type": "string"
+        },
         "delay_s": {
           "exclusiveMinimum": 0,
           "maximum": 1800,
@@ -546,6 +615,7 @@
       "required": [
         "type",
         "actor",
+        "mission",
         "delay_s"
       ],
       "title": "InjectDelay",
@@ -580,6 +650,7 @@
     },
     "LaunchMission": {
       "additionalProperties": false,
+      "description": "Only the mission pilot or the command post may launch.",
       "properties": {
         "type": {
           "const": "mission.launch",
@@ -590,11 +661,16 @@
         "actor": {
           "title": "Actor",
           "type": "string"
+        },
+        "mission": {
+          "title": "Mission",
+          "type": "string"
         }
       },
       "required": [
         "type",
-        "actor"
+        "actor",
+        "mission"
       ],
       "title": "LaunchMission",
       "type": "object"
@@ -664,6 +740,53 @@
       "title": "Mission",
       "type": "object"
     },
+    "MissionConstraints": {
+      "additionalProperties": false,
+      "description": "What constrains one mission: its grid, its zones, and the threats behind them.",
+      "properties": {
+        "mission": {
+          "title": "Mission",
+          "type": "string"
+        },
+        "grid": {
+          "$ref": "#/$defs/Grid",
+          "description": "Planning grid of the mission."
+        },
+        "zones": {
+          "description": "Zones of the concerned threats, for this pilot.",
+          "items": {
+            "$ref": "#/$defs/Zone"
+          },
+          "title": "Zones",
+          "type": "array"
+        },
+        "jammers": {
+          "description": "Friendly jammers that concern the mission.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Jammers",
+          "type": "array"
+        },
+        "threats": {
+          "description": "Enemy threats that concern the mission.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Threats",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mission",
+        "grid",
+        "zones",
+        "jammers",
+        "threats"
+      ],
+      "title": "MissionConstraints",
+      "type": "object"
+    },
     "MissionStatusChanged": {
       "additionalProperties": false,
       "properties": {
@@ -671,6 +794,10 @@
           "const": "mission.status",
           "default": "mission.status",
           "title": "Type",
+          "type": "string"
+        },
+        "mission": {
+          "title": "Mission",
           "type": "string"
         },
         "status": {
@@ -685,9 +812,58 @@
       },
       "required": [
         "type",
+        "mission",
         "status"
       ],
       "title": "MissionStatusChanged",
+      "type": "object"
+    },
+    "MissionView": {
+      "additionalProperties": false,
+      "properties": {
+        "constraints": {
+          "$ref": "#/$defs/MissionConstraints",
+          "description": "Grid, zones for this pilot, concerned jammers and threats."
+        },
+        "status": {
+          "enum": [
+            "planned",
+            "flying",
+            "arrived"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "plan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanUpdated"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Latest plan; None until the first one."
+        },
+        "drone": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DroneState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Latest drone state; None before take-off."
+        }
+      },
+      "required": [
+        "constraints",
+        "status",
+        "plan",
+        "drone"
+      ],
+      "title": "MissionView",
       "type": "object"
     },
     "Notification": {
@@ -793,7 +969,12 @@
           "title": "Type",
           "type": "string"
         },
+        "mission": {
+          "title": "Mission",
+          "type": "string"
+        },
         "revision": {
+          "description": "Grows by one per plan request of this mission.",
           "title": "Revision",
           "type": "integer"
         },
@@ -828,6 +1009,7 @@
       },
       "required": [
         "type",
+        "mission",
         "revision",
         "status",
         "metrics",
@@ -880,6 +1062,30 @@
       "title": "Position",
       "type": "object"
     },
+    "ReferenceLink": {
+      "additionalProperties": false,
+      "description": "Control link assumed for the nominal footprint of a jammer, seen without any mission.",
+      "properties": {
+        "eirp_w": {
+          "description": "Link EIRP, watts.",
+          "exclusiveMinimum": 0,
+          "title": "Eirp W",
+          "type": "number"
+        },
+        "range_m": {
+          "description": "Distance from the drone to its pilot.",
+          "exclusiveMinimum": 0,
+          "title": "Range M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "eirp_w",
+        "range_m"
+      ],
+      "title": "ReferenceLink",
+      "type": "object"
+    },
     "RoutePoint": {
       "additionalProperties": false,
       "description": "Position at time ``t``; ``action`` holds until the next point.",
@@ -929,6 +1135,14 @@
           "title": "Js Threshold Db",
           "type": "number"
         },
+        "reference_link": {
+          "$ref": "#/$defs/ReferenceLink"
+        },
+        "command_callsign": {
+          "description": "Callsign of the command post, which sees all.",
+          "title": "Command Callsign",
+          "type": "string"
+        },
         "friendly_jammers": {
           "items": {
             "$ref": "#/$defs/FriendlyJammer"
@@ -957,16 +1171,23 @@
           "title": "Enemy Threats",
           "type": "array"
         },
-        "mission": {
-          "$ref": "#/$defs/Mission"
+        "missions": {
+          "items": {
+            "$ref": "#/$defs/Mission"
+          },
+          "minItems": 1,
+          "title": "Missions",
+          "type": "array"
         }
       },
       "required": [
         "start_time",
         "js_threshold_db",
+        "reference_link",
+        "command_callsign",
         "friendly_jammers",
         "enemy_threats",
-        "mission"
+        "missions"
       ],
       "title": "Scenario",
       "type": "object"
@@ -996,6 +1217,19 @@
         "end_s": {
           "title": "End S",
           "type": "number"
+        },
+        "mission": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Mission the cut is asked for.",
+          "title": "Mission"
         }
       },
       "required": [
@@ -1147,7 +1381,7 @@
     },
     "Snapshot": {
       "additionalProperties": false,
-      "description": "Full state, sent on connect. Enough to render any instant on the client.",
+      "description": "State seen by one client, sent on connect. Enough to render any instant on it.",
       "properties": {
         "type": {
           "const": "snapshot",
@@ -1155,75 +1389,75 @@
           "title": "Type",
           "type": "string"
         },
+        "viewer": {
+          "$ref": "#/$defs/Viewer"
+        },
         "scenario": {
-          "$ref": "#/$defs/Scenario"
+          "$ref": "#/$defs/Scenario",
+          "description": "Only the jammers, threats and missions in view."
         },
-        "grid": {
-          "$ref": "#/$defs/Grid",
-          "description": "Planning grid, derived from the scenario positions."
-        },
-        "zones": {
-          "description": "Zones that matter to the mission, see domain.zones.",
+        "nominal_zones": {
+          "description": "Mission-independent footprints, see domain.zones. None for a pilot.",
           "items": {
             "$ref": "#/$defs/Zone"
           },
-          "title": "Zones",
+          "title": "Nominal Zones",
+          "type": "array"
+        },
+        "missions": {
+          "items": {
+            "$ref": "#/$defs/MissionView"
+          },
+          "title": "Missions",
           "type": "array"
         },
         "clock": {
           "$ref": "#/$defs/ClockState"
         },
         "cuts": {
+          "description": "Cuts of the jammers in view.",
           "items": {
             "$ref": "#/$defs/Cut"
           },
           "title": "Cuts",
           "type": "array"
-        },
-        "mission_status": {
-          "enum": [
-            "planned",
-            "flying",
-            "arrived"
-          ],
-          "title": "Mission Status",
-          "type": "string"
-        },
-        "plan": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/PlanUpdated"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Latest plan; None until the first one."
-        },
-        "drone": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/DroneState"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Latest drone state; None before take-off."
         }
       },
       "required": [
         "type",
+        "viewer",
         "scenario",
-        "grid",
-        "zones",
+        "nominal_zones",
+        "missions",
         "clock",
-        "cuts",
-        "mission_status",
-        "plan",
-        "drone"
+        "cuts"
       ],
       "title": "Snapshot",
+      "type": "object"
+    },
+    "Viewer": {
+      "additionalProperties": false,
+      "description": "Who is connected: the callsign the client gave, and its role in the scenario.",
+      "properties": {
+        "callsign": {
+          "title": "Callsign",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "command",
+            "pilot",
+            "operator"
+          ],
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "callsign",
+        "role"
+      ],
+      "title": "Viewer",
       "type": "object"
     },
     "Zone": {

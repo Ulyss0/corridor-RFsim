@@ -109,14 +109,15 @@ Python commands run from `backend/`.
 ```bash
 cd backend
 uv sync
-uv run corridor-server            # ws://127.0.0.1:8000/ws, scenarios/demo.json, clock x20, paused
+uv run corridor-server            # ws://127.0.0.1:8000/ws?callsign=..., scenarios/demo.json, clock x20, paused
 uv run corridor-server --host 0.0.0.0 --port 8000 --clock-factor 30 --cell-m 200 \
   --scenario scenarios/other.json
 uv run corridor-schema > ../schema/ws.schema.json   # after changing a message model
 ```
 
-- On connect a client gets a `snapshot` (scenario, planning grid, zones, clock, cuts, mission
-  status), then every event. A reconnect gets a fresh snapshot.
+- A client connects with its callsign (`/ws?callsign=CMD`, `PILOT-1`, `EW-J3`...). It gets a
+  `snapshot` and the events its role may see (command: everything; pilot: its mission; jammer
+  operator: its jammers and the missions they concern). A reconnect gets a fresh snapshot.
 - The simulation clock starts paused at t = 0; the front starts it with a `clock.set` command.
 - Demo: with the demo powers, J3's zone takes about 300 s to cross. A cut shorter than about
   7 min (crossing + 30 s + 60 s of margins) cannot give the straight route.
@@ -147,13 +148,14 @@ destinations. Only a flyable plan is exported: a `preview` plan relies on cuts n
 - ArduPilot's `NAV_DELAY` needs GPS time and is reported to overrun by up to about a minute: test
   on the target vehicle.
 
-From the running server (front: "Export route" card; Vite proxies `/api`):
+From the running server (front: "Export route" card, for the selected mission; Vite proxies
+`/api`). `mission_id` is required:
 
 ```bash
-curl -OJ "http://127.0.0.1:8000/api/export/inav?altitude_m=80"   # M1.mission
-curl -OJ "http://127.0.0.1:8000/api/export/ardupilot"             # M1.waypoints
-curl "http://127.0.0.1:8000/api/export/briefing"
-curl -X POST "http://127.0.0.1:8000/api/export/atak"               # needs --tak-host
+curl -OJ "http://127.0.0.1:8000/api/export/inav?mission_id=M1&altitude_m=80"   # M1.mission
+curl -OJ "http://127.0.0.1:8000/api/export/ardupilot?mission_id=M1"             # M1.waypoints
+curl "http://127.0.0.1:8000/api/export/briefing?mission_id=M1"
+curl -X POST "http://127.0.0.1:8000/api/export/atak?mission_id=M1"               # needs --tak-host
 ```
 
 Offline, without the server (cuts given with `--cut` count as confirmed), files in `export/`:
@@ -162,6 +164,7 @@ Offline, without the server (cuts given with `--cut` count as confirmed), files 
 uv run corridor-export --cut J3:900:1380
 uv run corridor-export --cut J3:900:1380 --altitude 80 --send 192.168.1.20   # also to ATAK
 uv run corridor-export --revoke 192.168.1.20                                  # delete it on ATAK
+uv run corridor-export --mission M2 --cut J4:900:1380                         # another mission
 ```
 
 Before the demo, on the real OTS and phone:

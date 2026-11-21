@@ -7,7 +7,7 @@ import pytest
 from corridor.domain.events import RoutePoint
 from corridor.domain.geo import Cell, Grid, LocalFrame, Position
 from corridor.domain.planner.astar import Step, earliest_path
-from corridor.domain.planner.masks import Mask, TimedMasks, disc_mask, timed_masks
+from corridor.domain.planner.masks import Mask, TimedMasks, disc_mask, shape_mask, timed_masks
 from corridor.domain.planner.plan import (
     ENTRY_MARGIN_S,
     EXIT_MARGIN_S,
@@ -17,11 +17,26 @@ from corridor.domain.planner.plan import (
 )
 from corridor.domain.scenario import Scenario
 from corridor.domain.state import Cut, CutStatus
-from corridor.domain.zones import Disc, mission_discs, planning_grid
+from corridor.domain.zones import (
+    Beam,
+    Disc,
+    ThreatShape,
+    azimuth_to_angle,
+    mission_constraints,
+    mission_shapes,
+)
 
 SQRT2 = math.sqrt(2)
 FOREVER = 1e6
 CELL_M = 100
+
+
+def grid_of(scenario: Scenario) -> Grid:
+    return mission_constraints(scenario, scenario.missions[0], CELL_M).grid
+
+
+def shapes_of(scenario: Scenario) -> list[ThreatShape]:
+    return mission_shapes(scenario, scenario.missions[0])
 
 
 def empty(cols: int, rows: int) -> Mask:
@@ -90,10 +105,35 @@ def test_outside_disc_forbids_everything_but_the_bubble_core() -> None:
     assert mask[0, 0]
 
 
+@pytest.mark.parametrize("azimuth_deg", [0, 45, 200])
+def test_directional_mask_forbids_every_cell_that_touches_the_zone(azimuth_deg: float) -> None:
+    grid, frame = small_grid()
+    beam = Beam(
+        x=1010, y=980, axis_rad=azimuth_to_angle(azimuth_deg), half_width_rad=math.radians(25)
+    )
+    zone = ThreatShape(
+        "J",
+        "friendly_jammer",
+        Disc(x=1100, y=1000, radius_m=700, forbidden="inside"),
+        beam,
+        Disc(x=1020, y=980, radius_m=150, forbidden="inside"),
+    )
+    mask = shape_mask(grid, zone, frame)
+    touching = np.zeros_like(mask)
+    samples = np.linspace(0, grid.cell_m, 11)
+    for row, col in itertools.product(range(grid.rows), range(grid.cols)):
+        touching[row, col] = any(
+            zone.contains(col * grid.cell_m + dx, row * grid.cell_m + dy)
+            for dx, dy in itertools.product(samples, samples)
+        )
+    assert not (touching & ~mask).any()  # safe: no touching cell is left free
+    assert mask.sum() <= 1.6 * touching.sum()  # and not much more than needed
+
+
 def test_friendly_zone_is_off_during_its_cut_only(scenario: Scenario) -> None:
-    grid = planning_grid(scenario, cell_m=100)
-    zones = mission_discs(scenario)
-    frame = LocalFrame(scenario.mission.launch)
+    grid = grid_of(scenario)
+    zones = shapes_of(scenario)
+    frame = LocalFrame(scenario.missions[0].launch)
     timed = timed_masks(grid, zones, frame, [cut("J3", 900, 1260)], 600, 2400)
     assert timed.edges == [600, 900, 1260, 2400]
     j3 = grid.cell_of(scenario.friendly_jammers[0].pos)
@@ -189,8 +229,8 @@ def assert_route_is_clear(scenario: Scenario, cuts: list[Cut], route: list[Route
 
     A friendly zone counts as off only inside its cut shrunk by the safety margins.
     """
-    mission = scenario.mission
-    grid = planning_grid(scenario, CELL_M)
+    mission = scenario.missions[0]
+    grid = grid_of(scenario)
     frame = LocalFrame(mission.launch)
     xy = [frame.to_xy(Position(lat=p.lat, lon=p.lon)) for p in route]
     assert xy[0] == pytest.approx((0, 0), abs=1)
@@ -208,7 +248,7 @@ def assert_route_is_clear(scenario: Scenario, cuts: list[Cut], route: list[Route
         else:
             assert pb.t - pa.t == pytest.approx(math.dist(a, b) / mission.cruise_speed_mps)
 
-    zones = mission_discs(scenario)
+    zones = shapes_of(scenario)
     for (a, b), (pa, pb) in zip(itertools.pairwise(xy), itertools.pairwise(route), strict=True):
         if pa.action == "ground":
             continue
@@ -223,13 +263,11 @@ def assert_route_is_clear(scenario: Scenario, cuts: list[Cut], route: list[Route
                     and c.start_s + ENTRY_MARGIN_S <= t <= c.end_s - EXIT_MARGIN_S
                     for c in cuts
                 )
-                d = zone.disc
-                inside = math.hypot(x - d.x, y - d.y) < d.radius_m
-                assert off or inside == (d.forbidden == "outside"), (x, y, t, zone.threat)
+                assert off or not zone.contains(x, y), (x, y, t, zone.threat)
 
 
 def plan(scenario: Scenario, cuts: list[Cut]) -> MissionPlan:
-    result = plan_mission(scenario, planning_grid(scenario, CELL_M), cuts)
+    result = plan_mission(scenario, scenario.missions[0], grid_of(scenario), cuts)
     assert result is not None
     assert_route_is_clear(scenario, [], result.baseline_route)
     assert_route_is_clear(scenario, cuts, result.optimised_route)
@@ -237,7 +275,7 @@ def plan(scenario: Scenario, cuts: list[Cut]) -> MissionPlan:
 
 
 def direct_s(scenario: Scenario) -> float:
-    mission = scenario.mission
+    mission = scenario.missions[0]
     frame = LocalFrame(mission.launch)
     return math.hypot(*frame.to_xy(mission.target)) / mission.cruise_speed_mps
 
@@ -256,8 +294,8 @@ def test_confirmed_cut_waits_on_the_ground_and_crosses_j3(scenario: Scenario) ->
     assert result.optimised_route[0].action == "ground"
     assert result.metrics.saved_pct > 5
 
-    frame = LocalFrame(scenario.mission.launch)
-    j3 = next(z.disc for z in mission_discs(scenario) if z.threat == "J3")
+    frame = LocalFrame(scenario.missions[0].launch)
+    j3 = next(z.disc for z in shapes_of(scenario) if z.threat == "J3")
     xy = [frame.to_xy(Position(lat=p.lat, lon=p.lon)) for p in result.optimised_route]
     samples = [
         (a[0] + (b[0] - a[0]) * i / 100, a[1] + (b[1] - a[1]) * i / 100)
@@ -271,7 +309,7 @@ def test_metrics_compare_flight_times(scenario: Scenario) -> None:
     result = plan(scenario, [cut("J3", 900, 1260)])
     baseline_s = flight_s(result.baseline_route)
     optimised_s = flight_s(result.optimised_route)
-    battery_s = scenario.mission.battery_max_s
+    battery_s = scenario.missions[0].battery_max_s
     metrics = result.metrics
     assert metrics.baseline_battery_used_pct == pytest.approx(100 * baseline_s / battery_s)
     assert metrics.optimised_battery_used_pct == pytest.approx(100 * optimised_s / battery_s)
@@ -303,6 +341,18 @@ def test_cut_over_before_departure_is_ignored(scenario: Scenario) -> None:
 
 def test_target_inside_a_radar_has_no_plan(scenario: Scenario) -> None:
     data = scenario.model_dump(mode="json")
-    data["mission"]["target"] = data["enemy_threats"][0]["pos"]  # R1
+    data["missions"][0]["target"] = data["enemy_threats"][0]["pos"]  # R1
     blocked = Scenario.model_validate(data)
-    assert plan_mission(blocked, planning_grid(blocked, CELL_M), []) is None
+    assert plan_mission(blocked, blocked.missions[0], grid_of(blocked), []) is None
+
+
+def test_directional_jammer_lets_the_route_pass_behind_its_beam(scenario: Scenario) -> None:
+    data = scenario.model_dump(mode="json")
+    data["friendly_jammers"][0]["antenna"] = {
+        "azimuth_deg": 0,
+        "beamwidth_deg": 60,
+        "sidelobe_db": -20,
+    }
+    directional = Scenario.model_validate(data)
+    result = plan(directional, [])
+    assert flight_s(result.baseline_route) < 1.05 * direct_s(directional)

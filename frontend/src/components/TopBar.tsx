@@ -1,29 +1,23 @@
-import { Badge, Button, Group, SegmentedControl, Select, Text, Title } from '@mantine/core'
-import { send } from '../api/client'
+import { Badge, Button, Group, SegmentedControl, Text, Title } from '@mantine/core'
+import { send, signOut } from '../api/client'
 import { clockLabel } from '../domain/view'
 import { useViewTime } from '../hooks/useSimNow'
 import { useStore } from '../store'
+import { ROLE_COLOR } from './colors'
 
 const SPEEDS = ['10', '20', '30', '60']
-const CONN_COLOR = { open: 'green', connecting: 'yellow', closed: 'red' } as const
+const CONN_COLOR = { idle: 'gray', open: 'green', connecting: 'yellow', closed: 'red' } as const
 
 export function TopBar() {
   const conn = useStore((s) => s.conn)
   const snapshot = useStore((s) => s.snapshot)
   const clock = useStore((s) => s.clock)
-  const actor = useStore((s) => s.actor)
-  const setActor = useStore((s) => s.setActor)
+  const callsign = useStore((s) => s.callsign)
   const viewTimeS = useStore((s) => s.viewTimeS)
   const setViewTime = useStore((s) => s.setViewTime)
   const t = useViewTime()
 
-  const callsigns = snapshot
-    ? [
-        { value: snapshot.scenario.mission.pilot_callsign, label: `${snapshot.scenario.mission.pilot_callsign} (pilot)` },
-        ...snapshot.scenario.friendly_jammers.map((j) => ({ value: j.operator_callsign, label: `${j.operator_callsign} (EW ${j.id})` })),
-        { value: 'HQ', label: 'HQ (planner)' },
-      ]
-    : []
+  const role = snapshot?.viewer.role
 
   return (
     <Group className="topbar" justify="space-between" px="md" wrap="nowrap">
@@ -55,8 +49,11 @@ export function TopBar() {
       </Group>
 
       <Group gap="xs" wrap="nowrap">
-        <Text size="sm" c="dimmed">Acting as</Text>
-        <Select size="xs" w={190} data={callsigns} value={actor} onChange={(v) => v && setActor(v)} allowDeselect={false} />
+        <Text size="sm" fw={600}>{callsign}</Text>
+        {role && <Badge color={ROLE_COLOR[role]}>{role}</Badge>}
+        <Button size="xs" variant="subtle" onClick={signOut}>
+          Switch
+        </Button>
       </Group>
     </Group>
   )

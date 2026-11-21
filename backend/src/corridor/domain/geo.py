@@ -1,7 +1,7 @@
 """Positions, local metric frame and the planning grid.
 
-The grid is not part of the scenario: the server derives it from the mission and its zones
-(``corridor.domain.zones.planning_grid``) and sends it in the snapshot. The area is about
+The grid is not part of the scenario: the server derives one per mission from its zones
+(``corridor.domain.zones.mission_constraints``) and sends it in the snapshot. The area is about
 10 x 10 km, so an equirectangular projection around a local origin is accurate to well under
 a cell.
 """

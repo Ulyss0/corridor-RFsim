@@ -12,7 +12,6 @@ cancelled), the engine asks for a fallback route from the drone position, using 
 from __future__ import annotations
 
 import itertools
-import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -20,7 +19,7 @@ from corridor.domain.events import RouteAction, RoutePoint
 from corridor.domain.geo import LocalFrame, Position
 from corridor.domain.planner.plan import ENTRY_MARGIN_S, EXIT_MARGIN_S
 from corridor.domain.state import Cut
-from corridor.domain.zones import ThreatDisc
+from corridor.domain.zones import ThreatShape
 
 CHECK_STEP_S = 2.0
 TOLERANCE_S = 2.0
@@ -100,19 +99,19 @@ def schedule_violation(
     flight: Flight,
     now: float,
     frame: LocalFrame,
-    discs: Sequence[ThreatDisc],
+    zones: Sequence[ThreatShape],
     cuts: Sequence[Cut],
 ) -> str | None:
     """Friendly jammer whose zone the rest of the route would enter outside a confirmed cut.
 
-    ``frame`` is the mission frame (centred on the launch point) the discs are expressed in.
+    ``frame`` is the mission frame (centred on the launch point) the zones are expressed in.
     """
     windows = [
         (c.jammer, c.start_s + ENTRY_MARGIN_S - TOLERANCE_S, c.end_s - EXIT_MARGIN_S + TOLERANCE_S)
         for c in cuts
         if c.status == "confirmed"
     ]
-    friendly = [d for d in discs if d.kind == "friendly_jammer"]
+    friendly = [z for z in zones if z.kind == "friendly_jammer"]
     t, end = flight.route_time(now), flight.route[-1].t
     while t <= end:
         position, action = position_at(flight.route, t)
@@ -120,9 +119,7 @@ def schedule_violation(
             x, y = frame.to_xy(position)
             actual = t + flight.delay_s
             for zone in friendly:
-                d = zone.disc
-                inside = math.hypot(x - d.x, y - d.y) < d.radius_m
-                if inside != (d.forbidden == "inside"):
+                if not zone.contains(x, y):
                     continue
                 if not any(j == zone.threat and a <= actual <= b for j, a, b in windows):
                     return zone.threat

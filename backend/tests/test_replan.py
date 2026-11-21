@@ -12,10 +12,11 @@ from corridor.domain.events import (
     PlanUpdated,
     RoutePoint,
 )
+from corridor.domain.geo import Position
 from corridor.domain.planner.plan import MissionPlan
 from corridor.domain.scenario import Scenario
 from corridor.domain.state import Cut
-from corridor.domain.zones import planning_grid
+from corridor.domain.zones import constraints_by_mission
 from corridor.engine.clock import SimClock
 from corridor.engine.engine import PLAN_LEAD_WALL_S, Engine
 from corridor.engine.replan import PlanDone, ProcessReplanner
@@ -25,6 +26,7 @@ EW = "EW-OFFICER"
 
 @dataclass
 class Request:
+    mission: str
     revision: int
     cuts: list[Cut]
     earliest_departure_s: float
@@ -38,9 +40,19 @@ class FakeReplanner:
     requests: list[Request] = field(default_factory=list)
 
     def request(
-        self, revision: int, cuts: list[Cut], earliest_departure_s: float, done: PlanDone
+        self,
+        mission: str,
+        revision: int,
+        cuts: list[Cut],
+        earliest_departure_s: float,
+        done: PlanDone,
     ) -> None:
-        self.requests.append(Request(revision, cuts, earliest_departure_s, done))
+        self.requests.append(Request(mission, revision, cuts, earliest_departure_s, done))
+
+    def request_fallback(
+        self, mission: str, revision: int, position: Position, now_s: float, done: PlanDone
+    ) -> None:
+        raise AssertionError("no flight in these tests")
 
     def close(self) -> None:
         pass
@@ -69,9 +81,14 @@ def wall() -> list[float]:
     return [0.0]
 
 
+def make_engine(scenario: Scenario, replanner: FakeReplanner, wall: list[float]) -> Engine:
+    constraints = constraints_by_mission(scenario, 100)
+    return Engine(scenario, constraints, SimClock(20, wall=lambda: wall[0]), replanner)
+
+
 @pytest.fixture
 def engine(scenario: Scenario, replanner: FakeReplanner, wall: list[float]) -> Engine:
-    return Engine(scenario, SimClock(20, wall=lambda: wall[0]), replanner)
+    return make_engine(scenario, replanner, wall)
 
 
 @pytest.fixture
@@ -100,20 +117,20 @@ def test_every_cut_change_requests_a_plan(engine: Engine, replanner: FakeReplann
 def test_plan_is_published_and_kept_for_the_snapshot(
     engine: Engine, replanner: FakeReplanner, published: list[Event]
 ) -> None:
-    engine.request_plan()
+    engine.request_plans()
     request = replanner.requests[0]
     request.done(request.revision, stub_plan())
     (event,) = published
     assert isinstance(event, PlanUpdated)
-    assert event.revision == 1
+    assert (event.mission, event.revision) == ("M1", 1)
     assert event.status == "approved"
-    assert engine.plan == event
+    assert engine.missions["M1"].plan == event
 
 
 def test_stale_plan_is_dropped(
     engine: Engine, replanner: FakeReplanner, published: list[Event]
 ) -> None:
-    engine.request_plan()
+    engine.request_plans()
     schedule(engine)
     published.clear()
     old, new = replanner.requests
@@ -127,11 +144,11 @@ def test_no_plan_once_the_drone_flies(
     engine: Engine, replanner: FakeReplanner, published: list[Event]
 ) -> None:
     # Launch needs a flyable plan: the first one comes back, a second one is still out.
-    engine.request_plan()
+    engine.request_plans()
     first = replanner.requests[0]
     first.done(first.revision, stub_plan())
-    engine.request_plan()
-    engine.submit(LaunchMission(actor="PILOT-1"))
+    engine.request_plans()
+    engine.submit(LaunchMission(actor="PILOT-1", mission="M1"))
     published.clear()
     late = replanner.requests[1]
     late.done(late.revision, stub_plan())
@@ -143,22 +160,22 @@ def test_no_plan_once_the_drone_flies(
 def test_no_route_notifies_the_pilot(
     engine: Engine, replanner: FakeReplanner, published: list[Event]
 ) -> None:
-    engine.request_plan()
+    engine.request_plans()
     replanner.requests[0].done(1, None)
     (event,) = published
     assert isinstance(event, Notification)
     assert event.to == "PILOT-1"
-    assert engine.plan is None
+    assert engine.missions["M1"].plan is None
 
 
 def test_replan_takes_off_after_the_plan_is_back(
     engine: Engine, replanner: FakeReplanner, wall: list[float]
 ) -> None:
-    engine.request_plan()
+    engine.request_plans()
     assert replanner.requests[0].earliest_departure_s == 0  # paused clock: no lead
     engine.submit(SetClock(actor=EW, paused=False))
     wall[0] = 25.0  # 500 simulated seconds
-    engine.request_plan()
+    engine.request_plans()
     assert replanner.requests[1].earliest_departure_s == pytest.approx(500 + 20 * PLAN_LEAD_WALL_S)
 
 
@@ -166,9 +183,10 @@ def test_process_replanner_runs_the_planner(scenario: Scenario) -> None:
     async def run() -> tuple[int, MissionPlan | None]:
         loop = asyncio.get_running_loop()
         result: asyncio.Future[tuple[int, MissionPlan | None]] = loop.create_future()
-        replanner = ProcessReplanner(scenario, planning_grid(scenario, 100))
+        grids = {m: c.grid for m, c in constraints_by_mission(scenario, 100).items()}
+        replanner = ProcessReplanner(scenario, grids)
         try:
-            replanner.request(7, [], 0.0, lambda r, p: result.set_result((r, p)))
+            replanner.request("M1", 7, [], 0.0, lambda r, p: result.set_result((r, p)))
             return await asyncio.wait_for(result, timeout=30)
         finally:
             replanner.close()
@@ -177,3 +195,40 @@ def test_process_replanner_runs_the_planner(scenario: Scenario) -> None:
     assert revision == 7
     assert plan is not None
     assert plan.status == "baseline"
+
+
+def test_a_cut_replans_only_the_missions_it_concerns(
+    two_missions: Scenario, replanner: FakeReplanner, wall: list[float]
+) -> None:
+    engine = make_engine(two_missions, replanner, wall)
+    engine.request_plans()
+    assert [(r.mission, r.revision) for r in replanner.requests] == [("M1", 1), ("M2", 1)]
+    engine.submit(ScheduleCut(actor=EW, jammer="J4", start_s=900, end_s=1260))
+    assert [(r.mission, r.revision) for r in replanner.requests[2:]] == [("M2", 2)]
+    assert [c.jammer for c in replanner.requests[2].cuts] == ["J4"]
+
+
+def test_plans_queued_together_take_off_later(
+    two_missions: Scenario, replanner: FakeReplanner, wall: list[float]
+) -> None:
+    engine = make_engine(two_missions, replanner, wall)
+    engine.submit(SetClock(actor=EW, paused=False))
+    engine.request_plans()
+    lead = 20 * PLAN_LEAD_WALL_S
+    assert [r.earliest_departure_s for r in replanner.requests] == pytest.approx([lead, 2 * lead])
+
+
+def test_plans_of_each_mission_are_kept_apart(
+    two_missions: Scenario, replanner: FakeReplanner, wall: list[float]
+) -> None:
+    engine = make_engine(two_missions, replanner, wall)
+    published: list[Event] = []
+    engine.subscribe(published.append)
+    engine.request_plans()
+    for request in replanner.requests:
+        request.done(request.revision, stub_plan())
+    assert [(e.mission, e.revision) for e in published if isinstance(e, PlanUpdated)] == [
+        ("M1", 1),
+        ("M2", 1),
+    ]
+    assert engine.missions["M2"].plan is not None

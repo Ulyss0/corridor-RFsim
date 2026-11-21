@@ -1,37 +1,52 @@
 // WebSocket client: auto-reconnect, one JSON message per frame, commands wrapped with a req_id.
 // The backend resends a full snapshot on every (re)connect, so no resync logic lives here.
+// The server knows who connects from `?callsign=`; it closes an unknown callsign with 4003,
+// which stops the reconnect loop (retrying would fail the same way).
 import type { Command, ServerMessage } from './protocol'
 
-export type ConnStatus = 'connecting' | 'open' | 'closed'
+export type ConnStatus = 'idle' | 'connecting' | 'open' | 'closed'
+
+/** Close code the server sends for a callsign the scenario does not know. */
+export const UNKNOWN_CALLSIGN = 4003
 
 interface Handlers {
   onMessage: (msg: ServerMessage) => void
   onStatus: (status: ConnStatus) => void
+  /** The server refused the callsign; no reconnect follows. */
+  onRejected: (reason: string) => void
 }
 
 export class CorridorSocket {
-  private readonly url: string
+  private readonly baseUrl: string
   private readonly handlers: Handlers
+  private url = ''
   private ws: WebSocket | null = null
   private reqCounter = 0
   private retries = 0
   private stopped = true
   private timer: number | undefined
 
-  constructor(url: string, handlers: Handlers) {
-    this.url = url
+  constructor(baseUrl: string, handlers: Handlers) {
+    this.baseUrl = baseUrl
     this.handlers = handlers
   }
 
-  start(): void {
+  /** Connect as `callsign`, dropping any current connection. */
+  start(callsign: string): void {
+    this.stop()
+    this.url = `${this.baseUrl}?callsign=${encodeURIComponent(callsign)}`
     this.stopped = false
+    this.retries = 0
     this.open()
   }
 
   stop(): void {
     this.stopped = true
     window.clearTimeout(this.timer)
-    this.ws?.close()
+    const ws = this.ws
+    this.ws = null
+    ws?.close()
+    this.handlers.onStatus('idle')
   }
 
   /** Returns the req_id, or null when not connected (the command is dropped). */
@@ -57,8 +72,15 @@ export class CorridorSocket {
         console.error('unparsable server message', err)
       }
     }
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (this.ws !== ws) return
+      if (event.code === UNKNOWN_CALLSIGN) {
+        this.stopped = true
+        this.ws = null
+        this.handlers.onStatus('idle')
+        this.handlers.onRejected(event.reason || 'unknown callsign')
+        return
+      }
       this.handlers.onStatus('closed')
       if (this.stopped) return
       const delay = Math.min(5000, 500 * 2 ** this.retries++)

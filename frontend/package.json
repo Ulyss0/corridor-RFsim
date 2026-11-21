@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test": "vitest run",
     "preview": "vite preview",
     "gen:types": "json2ts -i ../schema/ws.schema.json -o src/api/ws.gen.ts --unreachableDefinitions --additionalProperties false"
   },
@@ -30,6 +31,7 @@
     "postcss-preset-mantine": "^1.18.0",
     "postcss-simple-vars": "^7.0.1",
     "typescript": "~7.0.2",
-    "vite": "^8.3.6"
+    "vite": "^8.3.6",
+    "vitest": "^5.1.1"
   }
 }

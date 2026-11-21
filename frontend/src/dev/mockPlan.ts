@@ -1,9 +1,8 @@
 // DEV ONLY: fake `plan.updated` so the map, timeline and cards can be built before the planner
 // exists. Straight route that waits on the ground for the first cut; baseline bends north.
-import type { PlanUpdated, RoutePoint, Scenario, Cut } from '../api/protocol'
+import type { Cut, Mission, PlanUpdated, RoutePoint } from '../api/protocol'
 
-export function mockPlan(scenario: Scenario, cuts: Cut[]): PlanUpdated {
-  const m = scenario.mission
+export function mockPlan(m: Mission, cuts: Cut[]): PlanUpdated {
   const distM = haversine(m.launch, m.target)
   const flyS = distM / m.cruise_speed_mps
   const cut = [...cuts].sort((a, b) => a.start_s - b.start_s)[0]
@@ -24,6 +23,7 @@ export function mockPlan(scenario: Scenario, cuts: Cut[]): PlanUpdated {
   const opt = (100 * flyS) / m.battery_max_s
   return {
     type: 'plan.updated',
+    mission: m.id,
     revision: 0,
     status: cut?.status === 'confirmed' ? 'approved' : cut ? 'preview' : 'baseline',
     metrics: {

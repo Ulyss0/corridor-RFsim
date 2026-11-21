@@ -26,9 +26,9 @@ from typing import Literal
 from corridor.domain.events import PlanStatus, RoutePoint
 from corridor.domain.geo import LocalFrame, Position
 from corridor.domain.safety import Flight, schedule_violation
-from corridor.domain.scenario import Scenario
+from corridor.domain.scenario import Mission, Scenario
 from corridor.domain.state import Cut
-from corridor.domain.zones import mission_discs
+from corridor.domain.zones import mission_shapes
 
 DEFAULT_ALTITUDE_M = 100.0
 LATEST_STEP_S = 5.0
@@ -101,12 +101,16 @@ class FlightRoute:
 
 
 def latest_takeoff_s(
-    scenario: Scenario, route: Sequence[RoutePoint], takeoff_s: float, cuts: Sequence[Cut]
+    scenario: Scenario,
+    mission: Mission,
+    route: Sequence[RoutePoint],
+    takeoff_s: float,
+    cuts: Sequence[Cut],
 ) -> float | None:
     """Last take-off keeping the route inside its confirmed cuts, to the second, or None."""
     if not any(c.status == "confirmed" for c in cuts):
         return None
-    frame, discs = LocalFrame(scenario.mission.launch), mission_discs(scenario)
+    frame, discs = LocalFrame(mission.launch), mission_shapes(scenario, mission)
     points = list(route)
     ok = 0.0
     delay = LATEST_STEP_S
@@ -120,6 +124,7 @@ def latest_takeoff_s(
 
 def flight_route(
     scenario: Scenario,
+    mission: Mission,
     route: Sequence[RoutePoint],
     altitude_m: float = DEFAULT_ALTITUDE_M,
     *,
@@ -141,7 +146,6 @@ def flight_route(
     first = next((i for i, p in enumerate(points) if p.action != "ground"), None)
     if first is None or first == len(points) - 1:
         raise ValueError("a route needs a take-off point and at least one more point")
-    mission = scenario.mission
     frame = LocalFrame(mission.launch)
     start = points[first]
 
@@ -179,7 +183,7 @@ def flight_route(
         launch=mission.launch,
         start=Position(lat=start.lat, lon=start.lon),
         takeoff_s=start.t,
-        takeoff_latest_s=latest_takeoff_s(scenario, points, start.t, cuts),
+        takeoff_latest_s=latest_takeoff_s(scenario, mission, points, start.t, cuts),
         airborne=status == "fallback",
         altitude_m=altitude_m,
         cruise_speed_mps=mission.cruise_speed_mps,

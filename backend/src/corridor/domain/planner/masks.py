@@ -3,7 +3,8 @@
 A mask is a boolean array indexed ``[row, col]`` (row grows north, as in ``Grid``), True where
 the drone may not be. A cell is forbidden as soon as any part of it may lie on the forbidden
 side of a boundary: the test runs on the cell centre, with the boundary pushed out by half the
-cell diagonal. A route that stays in free cells therefore never grazes a zone.
+cell diagonal. A route that stays in free cells therefore never grazes a zone. For a directional
+jammer, the edges of its beam are pushed out the same way, on both sides.
 
 Cuts are piecewise constant in time, so the masks are too: one mask per segment between cut
 boundaries, not one per time step.
@@ -21,7 +22,7 @@ import numpy.typing as npt
 
 from corridor.domain.geo import Cell, Grid, LocalFrame
 from corridor.domain.state import Cut
-from corridor.domain.zones import Disc, ThreatDisc
+from corridor.domain.zones import Beam, Disc, ThreatShape
 
 Mask = npt.NDArray[np.bool_]
 
@@ -67,19 +68,68 @@ class TimedMasks:
 
 def disc_mask(grid: Grid, disc: Disc, frame: LocalFrame) -> Mask:
     """Cells that may reach the forbidden side of ``disc``, whose centre is given in ``frame``."""
-    cx, cy = grid.to_xy(frame.to_position(disc.x, disc.y))
-    xs = (np.arange(grid.cols) + 0.5) * grid.cell_m - cx
-    ys = (np.arange(grid.rows) + 0.5) * grid.cell_m - cy
-    distance: npt.NDArray[np.float64] = np.hypot(xs[np.newaxis, :], ys[:, np.newaxis])
-    half_diagonal = grid.cell_m * math.sqrt(2) / 2
+    xs, ys = _offsets(grid, frame, disc.x, disc.y)
+    distance: npt.NDArray[np.float64] = np.hypot(xs, ys)
+    half_diagonal = _half_diagonal(grid)
     if disc.forbidden == "inside":
         return distance < disc.radius_m + half_diagonal
     return distance > disc.radius_m - half_diagonal
 
 
+def shape_mask(grid: Grid, shape: ThreatShape, frame: LocalFrame) -> Mask:
+    """Cells that may reach the zone of ``shape``.
+
+    A cell is kept for the main disc if it may reach both that disc and the beam, and for the
+    sidelobe disc if it may reach both that disc and the outside of the beam. Being near each
+    of two sets does not mean being near their intersection, so this may forbid a few more
+    cells than needed, never fewer.
+    """
+    main = disc_mask(grid, shape.disc, frame)
+    if shape.beam is None:
+        return main
+    in_beam, near_edge = _beam_masks(grid, shape.beam, frame)
+    mask = main & (in_beam | near_edge)
+    if shape.sidelobe is not None:
+        mask |= disc_mask(grid, shape.sidelobe, frame) & (~in_beam | near_edge)
+    return mask
+
+
+def _beam_masks(grid: Grid, beam: Beam, frame: LocalFrame) -> tuple[Mask, Mask]:
+    """Cell centres inside the beam, and cells within half a diagonal of one of its edges."""
+    xs, ys = _offsets(grid, frame, beam.x, beam.y)
+    off_axis = np.arctan2(ys, xs) - beam.axis_rad
+    off_axis = np.abs(np.arctan2(np.sin(off_axis), np.cos(off_axis)))
+    in_beam: Mask = off_axis <= beam.half_width_rad
+    half_diagonal = _half_diagonal(grid)
+    near_edge = np.zeros_like(in_beam)
+    for edge in beam.edges():
+        ex, ey = math.cos(edge), math.sin(edge)
+        along = xs * ex + ys * ey
+        # Distance to the ray: across it when ahead of the jammer, to the jammer when behind.
+        distance = np.where(along >= 0, np.abs(xs * ey - ys * ex), np.hypot(xs, ys))
+        near_edge |= distance < half_diagonal
+    return in_beam, near_edge
+
+
+def _offsets(
+    grid: Grid, frame: LocalFrame, x: float, y: float
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Cell centres relative to the point (x, y) of ``frame``, broadcast to (rows, cols)."""
+    cx, cy = grid.to_xy(frame.to_position(x, y))
+    xs = (np.arange(grid.cols) + 0.5) * grid.cell_m - cx
+    ys = (np.arange(grid.rows) + 0.5) * grid.cell_m - cy
+    return np.broadcast_to(xs[np.newaxis, :], (grid.rows, grid.cols)), np.broadcast_to(
+        ys[:, np.newaxis], (grid.rows, grid.cols)
+    )
+
+
+def _half_diagonal(grid: Grid) -> float:
+    return grid.cell_m * math.sqrt(2) / 2
+
+
 def timed_masks(
     grid: Grid,
-    zones: Iterable[ThreatDisc],
+    zones: Iterable[ThreatShape],
     frame: LocalFrame,
     cuts: Iterable[Cut],
     start_s: float,
@@ -87,7 +137,7 @@ def timed_masks(
 ) -> TimedMasks:
     """Masks from ``start_s`` to ``end_s``. A friendly jammer zone is off during its cuts."""
     zones, cuts = list(zones), list(cuts)
-    zone_masks = [disc_mask(grid, z.disc, frame) for z in zones]
+    zone_masks = [shape_mask(grid, z, frame) for z in zones]
     inner = sorted({t for c in cuts for t in (c.start_s, c.end_s) if start_s < t < end_s})
     edges = [start_s, *inner, end_s]
     masks = []

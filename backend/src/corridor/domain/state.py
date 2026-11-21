@@ -29,6 +29,9 @@ class Cut(Model):
     end_s: float
     status: CutStatus
     requested_by: str
+    requested_for: str | None = Field(
+        default=None, description="Mission the cut was asked for; None: from the scenario."
+    )
 
 
 class ClockState(Model):
@@ -40,7 +43,8 @@ class ClockState(Model):
 @dataclass
 class WorldState:
     cuts: dict[str, Cut]
-    mission_status: MissionStatus
+    missions: dict[str, MissionStatus]
+    """Status of every mission, by id."""
 
     @classmethod
     def from_scenario(cls, scenario: Scenario) -> WorldState:
@@ -56,4 +60,7 @@ class WorldState:
             for jammer in scenario.friendly_jammers
             for index, planned in enumerate(jammer.cuts, start=1)
         ]
-        return cls(cuts={c.id: c for c in cuts}, mission_status="planned")
+        return cls(
+            cuts={c.id: c for c in cuts},
+            missions={m.id: "planned" for m in scenario.missions},
+        )

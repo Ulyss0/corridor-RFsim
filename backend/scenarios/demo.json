@@ -1,12 +1,31 @@
 {
   "start_time": "2026-11-21T14:00:00Z",
   "js_threshold_db": 0,
+  "reference_link": {
+    "eirp_w": 10,
+    "range_m": 5000
+  },
+  "command_callsign": "CMD",
   "friendly_jammers": [
     {
       "id": "J3",
       "operator_callsign": "EW-J3",
       "pos": {
         "lat": 48.144966,
+        "lon": 11.567331
+      },
+      "eirp_w": 2,
+      "bands": [
+        "2.4GHz",
+        "5.8GHz"
+      ],
+      "cuts": []
+    },
+    {
+      "id": "J4",
+      "operator_callsign": "EW-J4",
+      "pos": {
+        "lat": 48.03,
         "lon": 11.567331
       },
       "eirp_w": 2,
@@ -40,22 +59,42 @@
       ]
     }
   ],
-  "mission": {
-    "id": "M1",
-    "drone_id": "UAV-1",
-    "pilot_callsign": "PILOT-1",
-    "launch": {
-      "lat": 48.144966,
-      "lon": 11.513466
+  "missions": [
+    {
+      "id": "M1",
+      "drone_id": "UAV-1",
+      "pilot_callsign": "PILOT-1",
+      "launch": {
+        "lat": 48.144966,
+        "lon": 11.513466
+      },
+      "target": {
+        "lat": 48.144966,
+        "lon": 11.621196
+      },
+      "band": "2.4GHz",
+      "link_eirp_w": 10,
+      "cruise_speed_mps": 15,
+      "battery_max_s": 1800,
+      "departure_s": 600
     },
-    "target": {
-      "lat": 48.144966,
-      "lon": 11.621196
-    },
-    "band": "2.4GHz",
-    "link_eirp_w": 10,
-    "cruise_speed_mps": 15,
-    "battery_max_s": 1800,
-    "departure_s": 600
-  }
+    {
+      "id": "M2",
+      "drone_id": "UAV-2",
+      "pilot_callsign": "PILOT-2",
+      "launch": {
+        "lat": 48.03,
+        "lon": 11.513466
+      },
+      "target": {
+        "lat": 48.03,
+        "lon": 11.621196
+      },
+      "band": "2.4GHz",
+      "link_eirp_w": 10,
+      "cruise_speed_mps": 15,
+      "battery_max_s": 1800,
+      "departure_s": 600
+    }
+  ]
 }

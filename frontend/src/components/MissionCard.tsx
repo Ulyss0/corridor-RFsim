@@ -2,11 +2,10 @@ import { Alert, Badge, Button, Card, Group, Progress, Stack, Text } from '@manti
 import { send } from '../api/client'
 import type { PlanUpdated } from '../api/protocol'
 import { mockPlan } from '../dev/mockPlan'
-import { clockLabel, routePhases } from '../domain/view'
+import { clockLabel, missionOf, routePhases } from '../domain/view'
 import { ROUTE_COLORS } from '../map/mapView'
-import { useStore } from '../store'
-
-const STATUS_COLOR = { planned: 'blue', flying: 'green', arrived: 'gray' } as const
+import { useSelectedMission, useStore } from '../store'
+import { STATUS_COLOR } from './colors'
 
 const PLAN_TEXT: Record<PlanUpdated['status'], { title: string; color: string; detail: string }> = {
   baseline: { title: 'Detour', color: 'gray', detail: 'No usable cut: every friendly jammer is assumed on.' },
@@ -17,22 +16,26 @@ const PLAN_TEXT: Record<PlanUpdated['status'], { title: string; color: string; d
 
 export function MissionCard() {
   const snapshot = useStore((s) => s.snapshot)
-  const status = useStore((s) => s.missionStatus)
-  const plan = useStore((s) => s.plan)
-  const drone = useStore((s) => s.drone)
+  const callsign = useStore((s) => s.callsign)
   const cuts = useStore((s) => s.cuts)
-  if (!snapshot) return null
-  const { mission: m, start_time } = snapshot.scenario
+  const view = useSelectedMission()
+  if (!snapshot || !view) return null
+  const { start_time, command_callsign } = snapshot.scenario
+  const m = missionOf(snapshot.scenario, view.constraints.mission)
+  if (!m) return null
+  const { status, plan, drone } = view
   const label = (t: number) => clockLabel(start_time, t)
+  // The server enforces it too; the button only reflects the rule.
+  const canLaunch = callsign === m.pilot_callsign || callsign === command_callsign
 
   const injectMock = () =>
     useStore.getState().apply({
       seq: useStore.getState().seq,
       sim_time_s: useStore.getState().clock.sim_time_s,
-      payload: mockPlan(snapshot.scenario, Object.values(cuts)),
+      payload: mockPlan(m, Object.values(cuts)),
     })
 
-  const crossings = plan ? routePhases(plan.optimised_route, snapshot.zones).filter((p) => p.kind === 'crossing') : []
+  const crossings = plan ? routePhases(plan.optimised_route, view.constraints.zones).filter((p) => p.kind === 'crossing') : []
   const compare = plan && (plan.status === 'preview' || plan.status === 'approved')
   const text = plan ? PLAN_TEXT[plan.status] : null
   const takeoff = plan?.optimised_route.find((p) => p.action !== 'ground')?.t
@@ -46,6 +49,10 @@ export function MissionCard() {
       </Group>
       <Text size="xs" c="dimmed">
         Pilot {m.pilot_callsign} · {m.band} · {m.cruise_speed_mps} m/s · battery {Math.round(m.battery_max_s / 60)} min · departure from {label(m.departure_s)}
+      </Text>
+      <Text size="xs" c="dimmed" mt={4}>
+        Concerned: jammers {view.constraints.jammers.join(', ') || 'none'} · threats{' '}
+        {view.constraints.threats.join(', ') || 'none'}
       </Text>
 
       {plan && text ? (
@@ -90,16 +97,23 @@ export function MissionCard() {
       )}
 
       <Group mt="sm">
-        <Button
-          size="xs"
-          disabled={status !== 'planned' || !plan || plan.status === 'preview'}
-          title={plan?.status === 'preview' ? 'The plan relies on a cut not confirmed yet' : undefined}
-          onClick={() => send({ type: 'mission.launch' })}
-        >
-          Launch mission
-        </Button>
+        {canLaunch && (
+          <Button
+            size="xs"
+            disabled={status !== 'planned' || !plan || plan.status === 'preview'}
+            title={plan?.status === 'preview' ? 'The plan relies on a cut not confirmed yet' : undefined}
+            onClick={() => send({ type: 'mission.launch', mission: m.id })}
+          >
+            Launch mission
+          </Button>
+        )}
         {status === 'flying' && (
-          <Button size="xs" variant="light" color="orange" onClick={() => send({ type: 'inject.delay', delay_s: 120 })}>
+          <Button
+            size="xs"
+            variant="light"
+            color="orange"
+            onClick={() => send({ type: 'inject.delay', mission: m.id, delay_s: 120 })}
+          >
             Hold drone 120 s (demo)
           </Button>
         )}

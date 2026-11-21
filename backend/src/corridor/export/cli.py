@@ -3,6 +3,7 @@
 corridor-export --cut J3:900:1380                   write every file to export/
 corridor-export --cut J3:900:1380 --send 10.0.0.5   also send the route to the pilot's ATAK
 corridor-export --revoke 10.0.0.5                   remove the route from the pilot's ATAK
+corridor-export --mission M2                        another mission than the first one
 
 Cuts given with ``--cut`` count as confirmed. The running server exports its own current
 plan over HTTP instead (``/api/export/...``).
@@ -18,7 +19,7 @@ from pathlib import Path
 from corridor.domain.planner.plan import plan_mission
 from corridor.domain.scenario import load_scenario
 from corridor.domain.state import SCENARIO_ACTOR, Cut
-from corridor.domain.zones import planning_grid
+from corridor.domain.zones import mission_constraints
 from corridor.export.atak import TakTarget, deliver, revoke, route_cot
 from corridor.export.firmware import ardupilot_waypoints, inav_mission
 from corridor.export.route import DEFAULT_ALTITUDE_M, FlightRoute, briefing, flight_route
@@ -57,6 +58,7 @@ def write_files(route: FlightRoute, out: Path) -> list[Path]:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="corridor-export")
     parser.add_argument("--scenario", type=Path, default=Path("scenarios/demo.json"))
+    parser.add_argument("--mission", help="mission id (default: the first one)")
     parser.add_argument("--cell-m", type=float, default=100.0)
     parser.add_argument("--cut", type=_cut, action="append", default=[], metavar="J:START:END")
     parser.add_argument("--altitude", type=float, default=DEFAULT_ALTITUDE_M, help="m above launch")
@@ -68,6 +70,9 @@ def main() -> None:
     args = parser.parse_args()
 
     scenario = load_scenario(args.scenario)
+    mission = scenario.mission(args.mission) if args.mission else scenario.missions[0]
+    if mission is None:
+        raise SystemExit(f"unknown mission {args.mission!r}")
     cuts = [
         Cut(
             id=f"cut-{jammer}-{i}",
@@ -79,11 +84,13 @@ def main() -> None:
         )
         for i, (jammer, start, end) in enumerate(args.cut, start=1)
     ]
-    plan = plan_mission(scenario, planning_grid(scenario, args.cell_m), cuts)
+    grid = mission_constraints(scenario, mission, args.cell_m).grid
+    plan = plan_mission(scenario, mission, grid, cuts)
     if plan is None:
         raise SystemExit("no route: even the baseline is blocked")
     route = flight_route(
         scenario,
+        mission,
         plan.optimised_route,
         args.altitude,
         cuts=cuts,

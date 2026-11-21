@@ -3,12 +3,13 @@ import { useState } from 'react'
 import { send } from '../api/client'
 import { clockLabel } from '../domain/view'
 import { useLiveSimTime } from '../hooks/useSimNow'
-import { useStore } from '../store'
+import { useSelectedMission, useStore } from '../store'
 
 export function CutsCard() {
   const snapshot = useStore((s) => s.snapshot)
   const cuts = useStore((s) => s.cuts)
-  const actor = useStore((s) => s.actor)
+  const actor = useStore((s) => s.callsign)
+  const mission = useSelectedMission()
   const now = useLiveSimTime(1)
   const [jammer, setJammer] = useState<string | null>(null)
   const [startMin, setStartMin] = useState<number | string>('')
@@ -22,6 +23,9 @@ export function CutsCard() {
   const start = typeof startMin === 'number' ? startMin : defaultStart
   const duration = typeof durationMin === 'number' ? durationMin : 8
   const selected = jammer ?? jammers[0]?.id ?? null
+  // A cut asked from a mission's view is asked for that mission, when its jammer concerns it.
+  const forMission =
+    selected && mission?.constraints.jammers.includes(selected) ? mission.constraints.mission : null
 
   return (
     <Card withBorder padding="sm">
@@ -34,7 +38,10 @@ export function CutsCard() {
               <Text size="sm" fw={600}>
                 {c.jammer} {clockLabel(start_time, c.start_s)}–{clockLabel(start_time, c.end_s)}
               </Text>
-              <Text size="xs" c="dimmed">{c.id} · by {c.requested_by}</Text>
+              <Text size="xs" c="dimmed">
+                {c.id} · by {c.requested_by}
+                {c.requested_for && ` for ${c.requested_for}`}
+              </Text>
             </div>
             <Group gap={4} wrap="nowrap">
               <Badge color={c.status === 'confirmed' ? 'green' : 'orange'}>{c.status}</Badge>
@@ -64,13 +71,23 @@ export function CutsCard() {
         <Button
           size="xs"
           disabled={!selected}
-          onClick={() => selected && send({ type: 'cut.schedule', jammer: selected, start_s: start * 60, end_s: (start + duration) * 60 })}
+          onClick={() =>
+            selected &&
+            send({
+              type: 'cut.schedule',
+              jammer: selected,
+              start_s: start * 60,
+              end_s: (start + duration) * 60,
+              mission: forMission,
+            })
+          }
         >
           Add
         </Button>
       </Group>
       <Text size="xs" c="dimmed" mt={4}>
         {clockLabel(start_time, start * 60)} → {clockLabel(start_time, (start + duration) * 60)}
+        {forMission && ` · for ${forMission}`}
       </Text>
     </Card>
   )

@@ -10,6 +10,9 @@ dependencies = [
     "fastapi>=0.165.0",
     "numpy>=2.5.5",
     "pydantic>=2.14.4",
+    "pyproj>=3.8.0",
+    "rasterio>=1.5.2",
+    "scipy>=1.18.1",
     "uvicorn>=0.54.0",
     "websockets>=17.4",
 ]
@@ -40,6 +43,10 @@ strict = true
 mypy_path = "src"
 packages = ["corridor"]
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["rasterio.*", "scipy.*", "pyproj.*"]
+ignore_missing_imports = true
 
 [dependency-groups]
 dev = [

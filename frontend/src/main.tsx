@@ -2,11 +2,14 @@ import '@mantine/core/styles.css'
 import { MantineProvider } from '@mantine/core'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { socket } from './api/client'
+import { initialCallsign, signIn } from './api/client'
 import App from './App'
 import './index.css'
 
-socket.start()
+// Reconnect as the last callsign (URL `?as=`, else this browser); a refused one falls back to
+// the sign-in screen with the reason.
+const callsign = initialCallsign()
+if (callsign) signIn(callsign)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

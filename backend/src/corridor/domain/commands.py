@@ -19,6 +19,7 @@ class ScheduleCut(Model):
     jammer: str
     start_s: float = Field(ge=0)
     end_s: float
+    mission: str | None = Field(default=None, description="Mission the cut is asked for.")
 
     @model_validator(mode="after")
     def _end_after_start(self) -> Self:
@@ -40,8 +41,11 @@ class ConfirmCut(Model):
 
 
 class LaunchMission(Model):
+    """Only the mission pilot or the command post may launch."""
+
     type: Literal["mission.launch"] = "mission.launch"
     actor: str
+    mission: str
 
 
 class SetClock(Model):
@@ -56,6 +60,7 @@ class InjectDelay(Model):
 
     type: Literal["inject.delay"] = "inject.delay"
     actor: str
+    mission: str
     delay_s: float = Field(gt=0, le=1800)
 
 

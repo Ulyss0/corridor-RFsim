@@ -18,7 +18,7 @@ class CutScheduled(Model):
 
 class CutCancelled(Model):
     type: Literal["cut.cancelled"] = "cut.cancelled"
-    cut: str
+    cut: Cut = Field(description="The cut as it was before cancellation.")
 
 
 class CutConfirmed(Model):
@@ -33,6 +33,7 @@ class ClockChanged(Model):
 
 class MissionStatusChanged(Model):
     type: Literal["mission.status"] = "mission.status"
+    mission: str
     status: MissionStatus
 
 
@@ -78,7 +79,8 @@ class PlanUpdated(Model):
     """Planner output, after every change to the cuts while the mission is planned."""
 
     type: Literal["plan.updated"] = "plan.updated"
-    revision: int
+    mission: str
+    revision: int = Field(description="Grows by one per plan request of this mission.")
     status: PlanStatus
     metrics: PlanMetrics
     baseline_route: list[RoutePoint] = Field(description="As if every jammer stayed on.")
@@ -89,6 +91,7 @@ class DroneState(Model):
     """Simulated drone, every engine tick (about 2 Hz) while it flies."""
 
     type: Literal["drone.state"] = "drone.state"
+    mission: str
     position: Position
     action: RouteAction
     battery_used_pct: float = Field(description="Of battery_max_s, airborne time so far.")

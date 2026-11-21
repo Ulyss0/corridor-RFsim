@@ -23,7 +23,7 @@ operations). Nobody uses that schedule to plan drone routes.
 
 ## Inputs
 
-- **Mission**: launch point, pilot position, target, departure time.
+- **Missions**: launch point, pilot position, target, departure time; several at once.
 - **Drone profile**: speed, battery capacity, power use (cruise, hover), reserve, flight altitude,
   control and video links (bands, power, tolerance to jamming).
 - **Friendly jammers**: position, bands, power, antenna, operator, and their **schedule**: planned
@@ -66,9 +66,18 @@ operations). Nobody uses that schedule to plan drone routes.
 
 ## What each person sees
 
-- **Web planning screen**: map with zones (friendly on / cut, enemy, radars), planned route and
-  detour, drone position, timeline of cut windows with the drone's crossing on it, mission card
-  (distance, time, battery vs detour), approve button, notification feed.
+Several missions run at once over the same jammers. Each person sees what their role needs,
+nothing more; the server filters, so hidden data never reaches a screen.
+
+- **Command view (web)**: every jammer and threat with its nominal footprint (its reach against
+  a reference link, independent of any mission), every mission with its route and drone, the
+  cut schedule of every jammer. Selecting a mission overlays its own zones.
+- **Pilot view (web)**: its mission only, and only the jammers and threats that concern it (zone
+  on the mission band touching its area), drawn as they apply to its link. Planned route and
+  detour, drone position, timeline of the cuts of those jammers with the drone's crossing on
+  it, mission card (distance, time, battery vs detour), launch button, its notifications.
+- **EW operator view (web)**: its jammers, their cuts, and the missions that cross them with
+  their crossing windows; its notifications (cut requests to confirm, "cut now", "restart now").
 - **ATAK (pilot and EW operator phones)**: the same zones and route as map shapes, the drone
   position, and the notifications in chat.
 

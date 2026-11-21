@@ -163,15 +163,14 @@ async def route_smoke(args: argparse.Namespace) -> int:
     await tx.connect()
 
     scenario = load_scenario(args.scenario)
-    mission = scenario.mission.model_copy(
+    mission = scenario.missions[0].model_copy(
         update={"id": f"SMOKE-{nonce}", "pilot_callsign": pilot.me.callsign}
     )
-    scenario = scenario.model_copy(update={"mission": mission})
     ends = (mission.launch, mission.target)
     points = [
         RoutePoint(lat=p.lat, lon=p.lon, t=60.0 * i, action="fly") for i, p in enumerate(ends)
     ]
-    route = flight_route(scenario, points)
+    route = flight_route(scenario, mission, points)
     uid = route_uid(route)
     await tx.send(route_cot(route, time.time()))
 

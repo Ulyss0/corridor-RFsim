@@ -1,0 +1,58 @@
+{
+  "start_time": "2026-11-21T14:00:00Z",
+  "js_threshold_db": 0,
+  "reference_link": {
+    "eirp_w": 10,
+    "range_m": 5000
+  },
+  "command_callsign": "CMD",
+  "friendly_jammers": [
+    {
+      "id": "J-VALLEY",
+      "operator_callsign": "EW-ALPES",
+      "pos": {
+        "lat": 45.86,
+        "lon": 6.16
+      },
+      "eirp_w": 20,
+      "bands": [
+        "2.4GHz"
+      ],
+      "cuts": []
+    }
+  ],
+  "enemy_threats": [
+    {
+      "type": "jammer",
+      "id": "E-VALLEY",
+      "pos": {
+        "lat": 45.895,
+        "lon": 6.135
+      },
+      "eirp_w": 25,
+      "bands": [
+        "2.4GHz"
+      ]
+    }
+  ],
+  "missions": [
+    {
+      "id": "M-ANNECY",
+      "drone_id": "UAV-ALPINE",
+      "pilot_callsign": "PILOT-1",
+      "launch": {
+        "lat": 45.885,
+        "lon": 6.145
+      },
+      "target": {
+        "lat": 45.83,
+        "lon": 6.04
+      },
+      "band": "2.4GHz",
+      "link_eirp_w": 15,
+      "cruise_speed_mps": 15,
+      "battery_max_s": 2400,
+      "departure_s": 600
+    }
+  ]
+}

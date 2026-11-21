@@ -19,31 +19,41 @@ npm run build          # type-check + production build in dist/
 src/
   api/ws.gen.ts        generated from schema/ws.schema.json, do not edit
   api/protocol.ts      friendly names over the generated types
-  api/socket.ts        WebSocket client: auto-reconnect, req_id per command
-  api/client.ts        the app's single connection; send() adds the current callsign as actor
-  store.ts             Zustand store: mirrors snapshot + events, plus view settings
+  api/socket.ts        WebSocket client: ?callsign=, auto-reconnect (not after a 4003 refusal), req_id
+  api/client.ts        the app's single connection; signIn/signOut; send() adds the callsign as actor
+  store.ts             Zustand store: mirrors snapshot + events per mission, plus view settings
   domain/view.ts       pure helpers: zone state at an instant, drone position on a route, grid bounds
-  map/mapView.ts       all MapLibre code, framework-free (setScene, setZoneStates, setRoutes, setDrone)
+  map/mapView.ts       all MapLibre code, framework-free (setScene, setZoneStates, setRoutes, setDrones)
   hooks/useSimNow.ts   live sim time (extrapolated between server messages), view time
-  components/          TopBar, MapPanel, MissionCard, CutsCard, FeedCard, TimelinePanel
+  components/          SignIn, TopBar, MapPanel, MissionsCard, MissionCard, CutsCard, FeedCard,
+                       TimelinePanel
   dev/mockPlan.ts      DEV ONLY: fake plan.updated until the planner emits real ones
 ```
 
 ## What works
 
-- Connects to `/ws`, renders the snapshot: grid, zones (friendly red / cut green / pending orange,
-  enemy purple, radar orange; `forbidden: outside` drawn as the grid with the ring as a hole),
-  launch, target, threats.
-- Commands: `clock.set` (start / pause / speed), `cut.schedule`, `cut.confirm` (only enabled when
-  acting as the jammer's operator), `cut.cancel`, `mission.launch`. Server errors show as an alert.
-- "Acting as" picks the callsign sent as `actor` (pilot, jammer operators, HQ).
+- Sign in with a callsign (`?as=CMD` in the URL, else the last one used in this browser, else the
+  sign-in screen). The server decides the view from it and only sends what that role may see;
+  "Switch" signs out. An unknown callsign comes back to the sign-in screen with the reason.
+- Command (`CMD`): every mission (list to pick one), every route and drone, nominal footprints of
+  every threat (dashed), the selected mission's own zones on top. Pilot: its mission only, with
+  the zones that concern it. Jammer operator: its jammers' footprints and the missions they
+  concern.
+- Map: grids, zones (friendly red / cut green / pending orange, enemy purple, radar orange;
+  `forbidden: outside` drawn as the grid with the ring as a hole), launch and target of every
+  mission, threats.
+- Commands: `clock.set` (start / pause / speed), `cut.schedule` (asked for the selected mission
+  when its jammer concerns it), `cut.confirm` (only enabled for the jammer's operator),
+  `cut.cancel`, `mission.launch` (shown to the mission pilot and the command). Server errors show
+  as an alert.
 - Notification feed with the confirm button from `notification.action`.
-- Timeline: cuts per jammer, drone route segments (`ground` / `fly` / `hover`), orange cursor on
+- Timeline: cuts per jammer in view, one row per drone in view with its route segments (`ground` / `fly` / `hover`), orange cursor on
   live time. Drag the cursor to scrub: map and zones follow; "Back to live" resets.
-- `plan.updated`: both routes on the map, metrics in the mission card. Launch is disabled while
+- `plan.updated`: planned route of every mission in view, detour of the selected one, metrics in
+  the mission card. Launch is disabled while
   the plan is a `preview` (cut not confirmed).
-- Live drone from `drone.state` (position, battery, delay); when scrubbing, the drone is placed on
-  the planned route instead. "Hold drone 120 s (demo)" sends `inject.delay` (late-drone twist).
+- Live drones from `drone.state` (position, battery, delay; the selected one stands out); when
+  scrubbing, each drone is placed on its planned route instead. "Hold drone 120 s (demo)" sends `inject.delay` (late-drone twist).
 - "Mock plan (dev)" still injects a fake plan locally, for work without the backend planner.
 
 ## To do

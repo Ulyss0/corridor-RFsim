@@ -15,9 +15,9 @@ from corridor.domain.events import RouteAction, RoutePoint
 from corridor.domain.geo import Grid, LocalFrame, Position
 from corridor.domain.planner.plan import plan_fallback, plan_mission
 from corridor.domain.safety import Flight, schedule_violation
-from corridor.domain.scenario import Scenario
+from corridor.domain.scenario import Mission, Scenario
 from corridor.domain.state import Cut
-from corridor.domain.zones import mission_discs, planning_grid
+from corridor.domain.zones import mission_constraints, mission_shapes
 from corridor.engine.replan import PlanDone
 from corridor.export.atak import TakTarget, chat_cot, delete_cot, route_cot, sender_identity
 from corridor.export.firmware import ardupilot_waypoints, inav_mission
@@ -31,9 +31,17 @@ from corridor.export.route import (
 from corridor.tak.cot import self_sa
 
 
+def m1(scenario: Scenario) -> Mission:
+    return scenario.missions[0]
+
+
+def grid_of(scenario: Scenario) -> Grid:
+    return mission_constraints(scenario, m1(scenario), 100).grid
+
+
 def _points(scenario: Scenario) -> list[RoutePoint]:
     """Ground until 300 s, a turn, a hold 500-620 s, the target at 800 s."""
-    frame = LocalFrame(scenario.mission.launch)
+    frame = LocalFrame(m1(scenario).launch)
 
     def at(x: float, y: float, t: float, action: RouteAction) -> RoutePoint:
         p = frame.to_position(x, y)
@@ -52,7 +60,9 @@ def _points(scenario: Scenario) -> list[RoutePoint]:
 
 @pytest.fixture
 def route(scenario: Scenario) -> FlightRoute:
-    return flight_route(scenario, _points(scenario), 100, status="approved", revision=3)
+    return flight_route(
+        scenario, m1(scenario), _points(scenario), 100, status="approved", revision=3
+    )
 
 
 def test_waypoints_drop_ground_wait_and_merge_hover(route: FlightRoute) -> None:
@@ -78,14 +88,14 @@ def test_route_through_a_cut_has_a_latest_takeoff(scenario: Scenario) -> None:
     cut = Cut(
         id="c1", jammer="J3", start_s=900, end_s=1380, status="confirmed", requested_by="EW-J3"
     )
-    plan = plan_mission(scenario, planning_grid(scenario, 100), [cut])
+    plan = plan_mission(scenario, m1(scenario), grid_of(scenario), [cut])
     assert plan is not None
     assert plan.status == "approved"
-    route = flight_route(scenario, plan.optimised_route, cuts=[cut])
+    route = flight_route(scenario, m1(scenario), plan.optimised_route, cuts=[cut])
     latest = route.takeoff_latest_s
     assert latest is not None
     assert route.takeoff_s < latest < route.takeoff_s + LATEST_HORIZON_S
-    frame, discs = LocalFrame(scenario.mission.launch), mission_discs(scenario)
+    frame, discs = LocalFrame(m1(scenario).launch), mission_shapes(scenario, m1(scenario))
     too_late = latest + 2 * LATEST_STEP_S - route.takeoff_s
     flight = Flight(route=list(plan.optimised_route), revision=0, delay_s=too_late)
     assert schedule_violation(flight, route.takeoff_s + too_late, frame, discs, [cut]) == "J3"
@@ -94,12 +104,12 @@ def test_route_through_a_cut_has_a_latest_takeoff(scenario: Scenario) -> None:
     names = [link.get("callsign") for link in fromstring(route_cot(route, 0.0)).iter("link")]
     assert names[0] == f"T/O {window}"
     # Without the cut it relies on, the same route has no latest time.
-    assert flight_route(scenario, plan.optimised_route).takeoff_latest_s is None
+    assert flight_route(scenario, m1(scenario), plan.optimised_route).takeoff_latest_s is None
 
 
 def test_route_needs_a_takeoff_and_a_waypoint(scenario: Scenario) -> None:
     with pytest.raises(ValueError):
-        flight_route(scenario, _points(scenario)[:1])
+        flight_route(scenario, m1(scenario), _points(scenario)[:1])
 
 
 def test_inav_mission(route: FlightRoute) -> None:
@@ -145,21 +155,21 @@ def test_ardupilot_waits_until_utc_times(route: FlightRoute) -> None:
 def test_ardupilot_converts_local_time_to_utc(scenario: Scenario) -> None:
     paris = timezone(timedelta(hours=1))
     local = scenario.model_copy(update={"start_time": datetime(2026, 11, 21, 15, tzinfo=paris)})
-    route = flight_route(local, _points(local))
+    route = flight_route(local, m1(local), _points(local))
     assert route.label(0) == "15:00:00"
     wait = _rows(ardupilot_waypoints(route))[2]
     assert [float(v) for v in wait[4:8]] == [-1, 14, 5, 0]
 
 
 def test_fallback_route_is_airborne(scenario: Scenario) -> None:
-    grid = planning_grid(scenario, 100)
-    planned = plan_mission(scenario, grid, [])
+    grid = grid_of(scenario)
+    planned = plan_mission(scenario, m1(scenario), grid, [])
     assert planned is not None
     mid = planned.optimised_route[len(planned.optimised_route) // 2]
     here = Position(lat=mid.lat, lon=mid.lon)
-    plan = plan_fallback(scenario, grid, here, mid.t)
+    plan = plan_fallback(scenario, m1(scenario), grid, here, mid.t)
     assert plan is not None
-    route = flight_route(scenario, plan.optimised_route, status="fallback")
+    route = flight_route(scenario, m1(scenario), plan.optimised_route, status="fallback")
     assert route.airborne
     assert route.start.lat == pytest.approx(here.lat, abs=1e-6)
     commands = [int(r[3]) for r in _rows(ardupilot_waypoints(route))]
@@ -206,20 +216,36 @@ def test_atak_chat_and_delete(route: FlightRoute) -> None:
 
 # --- HTTP ---------------------------------------------------------------------------
 
+M1 = {"mission_id": "M1"}
+
 
 class SyncReplanner:
-    def __init__(self, scenario: Scenario, grid: Grid) -> None:
-        self.scenario, self.grid = scenario, grid
+    """Runs the real planner at once, in the calling thread."""
+
+    def __init__(self, scenario: Scenario, grids: dict[str, Grid]) -> None:
+        self.scenario, self.grids = scenario, grids
+
+    def _mission(self, mission_id: str) -> Mission:
+        mission = self.scenario.mission(mission_id)
+        assert mission is not None
+        return mission
 
     def request(
-        self, revision: int, cuts: list[Cut], earliest_departure_s: float, done: PlanDone
+        self,
+        mission: str,
+        revision: int,
+        cuts: list[Cut],
+        earliest_departure_s: float,
+        done: PlanDone,
     ) -> None:
-        done(revision, plan_mission(self.scenario, self.grid, cuts, earliest_departure_s))
+        m, grid = self._mission(mission), self.grids[mission]
+        done(revision, plan_mission(self.scenario, m, grid, cuts, earliest_departure_s))
 
     def request_fallback(
-        self, revision: int, position: Position, now_s: float, done: PlanDone
+        self, mission: str, revision: int, position: Position, now_s: float, done: PlanDone
     ) -> None:
-        done(revision, plan_fallback(self.scenario, self.grid, position, now_s))
+        m, grid = self._mission(mission), self.grids[mission]
+        done(revision, plan_fallback(self.scenario, m, grid, position, now_s))
 
     def close(self) -> None:
         pass
@@ -250,7 +276,7 @@ class FakeOts:
 
 @pytest.fixture
 def ots(scenario: Scenario) -> Iterator[FakeOts]:
-    fake = FakeOts(scenario.mission.pilot_callsign)
+    fake = FakeOts(m1(scenario).pilot_callsign)
     yield fake
     fake.close()
 
@@ -258,27 +284,39 @@ def ots(scenario: Scenario) -> Iterator[FakeOts]:
 def test_http_exports_the_current_plan(scenario: Scenario) -> None:
     app = create_app(scenario, clock_factor=20, cell_m=100, replanner=SyncReplanner)
     with TestClient(app) as client:
-        inav = client.get("/api/export/inav", params={"altitude_m": 80})
+        inav = client.get("/api/export/inav", params=M1 | {"altitude_m": 80})
         assert inav.status_code == 200
         assert 'filename="M1.mission"' in inav.headers["content-disposition"]
         items = fromstring(inav.text).findall("missionitem")
         assert items
         assert {i.get("alt") for i in items} == {"80"}
-        assert client.get("/api/export/ardupilot").text.startswith("QGC WPL 110")
-        assert "T/O not before" in client.get("/api/export/briefing").text
-        assert client.get("/api/export/inav", params={"altitude_m": 0}).status_code == 422
-        assert client.post("/api/export/atak").status_code == 503
+        assert client.get("/api/export/ardupilot", params=M1).text.startswith("QGC WPL 110")
+        assert "T/O not before" in client.get("/api/export/briefing", params=M1).text
+        assert client.get("/api/export/inav", params=M1 | {"altitude_m": 0}).status_code == 422
+        assert client.get("/api/export/inav").status_code == 422  # mission_id is required
+        assert client.get("/api/export/inav", params={"mission_id": "M9"}).status_code == 404
+        assert client.post("/api/export/atak", params=M1).status_code == 503
+
+
+def test_http_exports_each_mission_its_own_plan(two_missions: Scenario) -> None:
+    app = create_app(two_missions, clock_factor=20, cell_m=100, replanner=SyncReplanner)
+    with TestClient(app) as client:
+        for mission in two_missions.missions:
+            briefing_text = client.get(
+                "/api/export/briefing", params={"mission_id": mission.id}
+            ).text
+            assert mission.drone_id in briefing_text
 
 
 def test_http_refuses_a_preview_plan(scenario: Scenario) -> None:
     app = create_app(scenario, clock_factor=20, cell_m=100, replanner=SyncReplanner)
-    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+    with TestClient(app) as client, client.websocket_connect("/ws?callsign=CMD") as ws:
         ws.receive_json()
-        cut = {"type": "cut.schedule", "actor": "HQ", "jammer": "J3", "start_s": 900}
+        cut = {"type": "cut.schedule", "actor": "CMD", "jammer": "J3", "start_s": 900}
         ws.send_json({"req_id": "r1", "command": cut | {"end_s": 1380}})
         while ws.receive_json()["payload"]["type"] != "ack":
             pass
-        response = client.get("/api/export/inav")
+        response = client.get("/api/export/inav", params=M1)
         assert response.status_code == 409
         assert "unconfirmed" in response.json()["detail"]
 
@@ -287,11 +325,11 @@ def test_http_sends_the_route_to_atak(scenario: Scenario, ots: FakeOts) -> None:
     tak = TakTarget("127.0.0.1", ots.port)
     app = create_app(scenario, clock_factor=20, cell_m=100, replanner=SyncReplanner, tak=tak)
     with TestClient(app) as client:
-        response = client.post("/api/export/atak")
+        response = client.post("/api/export/atak", params=M1)
     assert response.status_code == 200
     body = response.json()
     assert body["chat_sent"] is True
-    assert body["pilot_callsign"] == scenario.mission.pilot_callsign
+    assert body["pilot_callsign"] == m1(scenario).pilot_callsign
     sent = bytes(ots.received)
     assert b'type="b-m-r"' in sent
     assert b'type="b-t-f"' in sent
@@ -305,4 +343,4 @@ def test_http_reports_an_unreachable_ots(scenario: Scenario) -> None:
     tak = TakTarget("127.0.0.1", port)
     app = create_app(scenario, clock_factor=20, cell_m=100, replanner=SyncReplanner, tak=tak)
     with TestClient(app) as client:
-        assert client.post("/api/export/atak").status_code == 502
+        assert client.post("/api/export/atak", params=M1).status_code == 502

@@ -34,7 +34,8 @@ backend/src/corridor/
     model.py      pydantic base class shared by every model that crosses a boundary
     geo.py        Position, LocalFrame (lat/lon <-> metres), Grid (cell lookup, covering grid)
     scenario.py   Scenario and its parts, consistency checks, JSON loader
-    zones.py      J/S zones (circles of Apollonius), radar discs, planning grid
+    zones.py      J/S zones (circles of Apollonius, directional beams), radar discs, mission
+                  constraints (planning grid, concerned threats), nominal footprints
     state.py      Cut, ClockState, WorldState (runtime state)
     commands.py   domain commands (discriminated union on "type")
     events.py     domain events (discriminated union on "type")
@@ -46,13 +47,15 @@ backend/src/corridor/
     safety.py     Flight (route, delay, holds, battery), safety rule, cut start/end transitions
   engine/
     clock.py      SimClock: accelerated clock with an injectable wall-clock source
-    engine.py     Engine: commands, plans, tick (cut transitions, stale plan, flight, safety rule)
+    engine.py     Engine: commands, one MissionRuntime per mission (plan, flight, drone),
+                  tick (cut transitions, stale plans, flights, safety rule)
     replan.py     ProcessReplanner: mission and fallback plans in a spawned worker process
   adapters/
     ws/
       schemas.py  wire envelopes, Snapshot, Ack, Error
-      hub.py      fan-out of server messages to connected clients
-      app.py      FastAPI app, /ws endpoint, /api/export/* (route export over HTTP)
+      audience.py who sees what: viewer (callsign, role), scope, event filter, filtered snapshot
+      hub.py      fan-out of server messages to connected clients, through the audience filter
+      app.py      FastAPI app, /ws endpoint, /api/export/* (route export over HTTP, per mission)
       server.py   corridor-server entry point
       schema.py   corridor-schema: JSON Schema export
   export/
@@ -62,7 +65,9 @@ backend/src/corridor/
     atak.py       ATAK route (b-m-r) and GeoChat DM addressed to the pilot, delete, deliver()
     cli.py        corridor-export: plan offline, write the files, send to / revoke on ATAK
   tak/            CoT client and encoders, unchanged; moves to adapters/tak with the TAK adapter
-backend/scenarios/demo.json   demo scenario (J3 between pilot and target, radar to the side, enemy jammer)
+backend/scenarios/demo.json   demo scenario: M1 (J3 between pilot and target, radar to the side, enemy
+                              jammer) and M2 12.7 km south with its own jammer J4
+backend/scenarios/directional.json   the demo with J3 directional (60° beam to the north, -20 dB sidelobes)
 schema/ws.schema.json         generated protocol schema (repository root), consumed by the front end
 ```
 
@@ -93,7 +98,7 @@ Two kinds of data, kept apart:
 
 | | Scenario | World state |
 |---|---|---|
-| Content | start time, friendly jammers (with optional initial cuts), enemy threats, the mission | cuts (scheduled or confirmed), mission status; later drone position and injected enemy threats |
+| Content | start time, friendly jammers (with optional initial cuts), enemy threats, the missions, the command callsign, the reference link | cuts (scheduled or confirmed), status of each mission; later injected enemy threats |
 | Source | `backend/scenarios/*.json`, written by hand for the demo | built by the engine from the scenario, then changed by commands |
 | Lifetime | static during a run | in memory; restart the server to reset |
 
@@ -101,19 +106,34 @@ Two kinds of data, kept apart:
   time field ends in `_s`.
 - Jammers are described by their EIRP (effective isotropic radiated power); the zone they deny
   comes from the J/S (jammer to signal) model below. Radars are discs (`radius_m`).
+- A friendly jammer may have a directional `antenna` (`azimuth_deg` clockwise from north,
+  `beamwidth_deg` up to 180, `sidelobe_db` up to 0). Its `eirp_w` is then the main beam EIRP.
+  Without `antenna` it is omnidirectional. Enemy jammers are omnidirectional for now.
 - Friendly jammers are on except during cuts. `cuts` in the file are cuts already scheduled at
   start: they begin as `scheduled` and still need the operator's confirmation. Other cuts are
   created live with `cut.schedule`.
-- Band filter: a jammer (friendly or enemy) only blocks the mission if its `bands` contain the
+- Band filter: a jammer (friendly or enemy) only blocks a mission if its `bands` contain the
   mission `band`. A radar blocks every band.
-- One mission per scenario. It carries the drone, the pilot callsign (the pilot stands at the
-  launch point), speed, battery and earliest departure.
-- The grid is not in the file: the server derives it from launch, target and threat positions,
-  with 3000 m of margin on each side (`--cell-m`, default 100 m), and sends it in the snapshot.
-  Zones may reach past the grid; cells outside it are unreachable.
-- The scenario is checked on load: unique ids, non-overlapping initial cuts, known threat
-  `type`, no unknown field. Zones are computed at server start, which fails on a degenerate
-  case (jammer on the launch point, or a boundary that is nearly a straight line).
+- Several missions share the jammers, threats and cuts. A mission carries the drone, the pilot
+  callsign (the pilot stands at the launch point), speed, battery and earliest departure.
+- Zones depend on the pilot (position and link power), so each mission has its own: the same J3
+  denies a different area to two missions.
+- **Concerned threats and grid** (`mission_constraints`). The grid is not in the file. The
+  server starts from launch and target with 3000 m of margin (`--cell-m`, default 100 m). A
+  threat concerns the mission when its zone, for this pilot, touches the grid; the grid then
+  grows to cover the concerned threats too, until the set stops changing. A cut only replans
+  the missions its jammer concerns, and a pilot only sees those threats. Zones may reach past
+  the grid; cells outside it are unreachable.
+- **Nominal footprint** (`nominal_zones`), for the command view, which sees no particular
+  mission: the zone where a drone `reference_link.range_m` from its pilot loses a link of
+  `reference_link.eirp_w`, that is a disc of radius `range_m × sqrt(Pj / (t × Ps))` centred on
+  the jammer (two radii for a directional one, main beam and sidelobes). Radars keep their disc.
+- **Roles.** Every callsign has one: `command_callsign` (sees everything), a mission
+  `pilot_callsign`, or a jammer `operator_callsign` (an operator may run several jammers).
+- The scenario is checked on load: unique ids, drones and callsigns, at least one mission,
+  non-overlapping initial cuts, known threat `type`, no unknown field. Zones are computed at
+  server start, which fails on a degenerate case (jammer on the launch point, or a boundary
+  that is nearly a straight line).
 
 Scenario file:
 
@@ -121,6 +141,8 @@ Scenario file:
 {
   "start_time": "2026-11-21T14:00:00Z",
   "js_threshold_db": 0,
+  "reference_link": { "eirp_w": 10, "range_m": 5000 },
+  "command_callsign": "CMD",
   "friendly_jammers": [
     { "id": "J3", "operator_callsign": "EW-J3", "pos": { "lat": 48.145, "lon": 11.567 },
       "eirp_w": 2, "bands": ["2.4GHz", "5.8GHz"],
@@ -131,16 +153,212 @@ Scenario file:
     { "type": "jammer", "id": "E1", "pos": { "lat": 48.111, "lon": 11.554 }, "eirp_w": 1,
       "bands": ["2.4GHz"] }
   ],
-  "mission": {
-    "id": "M1", "drone_id": "UAV-1", "pilot_callsign": "PILOT-1",
-    "launch": { "lat": 48.145, "lon": 11.513 }, "target": { "lat": 48.145, "lon": 11.621 },
-    "band": "2.4GHz", "link_eirp_w": 10, "cruise_speed_mps": 15, "battery_max_s": 1800,
-    "departure_s": 600
-  }
+  "missions": [
+    { "id": "M1", "drone_id": "UAV-1", "pilot_callsign": "PILOT-1",
+      "launch": { "lat": 48.145, "lon": 11.513 }, "target": { "lat": 48.145, "lon": 11.621 },
+      "band": "2.4GHz", "link_eirp_w": 10, "cruise_speed_mps": 15, "battery_max_s": 1800,
+      "departure_s": 600 }
+  ]
 }
 ```
 - The JSON file is the initial data set, not a storage: nothing is written back. If persistence
   comes, `WorldState` is the one place to plug it.
+
+## Class diagram
+
+Main classes, without the WebSocket adapter (message fan-out and who sees what are documented
+under "WebSocket protocol"). Conventions:
+
+- Solid line with a diamond: the class owns the other (composition).
+- Dashed arrow: a reference by id (a `str` field), resolved through `Scenario`; the models do not
+  hold pointers to each other, so they serialise as they are.
+- `Position` (`lat`, `lon`) and the literal types (`Role`, `CutStatus`, `MissionStatus`,
+  `PlanStatus`, `RouteAction`, `ZoneKind`, `ForbiddenSide`) are left out.
+- Optional fields: `antenna`, `requested_for`, and a mission's `plan`, `flight`, `drone`.
+
+**Static data** (the scenario file) **and what the server derives from it at start.** A
+`MissionConstraints` exists per mission: zones depend on the pilot, so the same jammer has one
+zone per mission. `nominal_zones()` gives the command view one footprint per threat.
+
+```mermaid
+classDiagram
+    direction LR
+    class Scenario {
+        +datetime start_time
+        +float js_threshold_db
+        +str command_callsign
+        +mission(id) Mission
+        +friendly_jammer(id) FriendlyJammer
+        +role_of(callsign) Role
+    }
+    class ReferenceLink {
+        +float eirp_w
+        +float range_m
+    }
+    class Mission {
+        +str id
+        +str drone_id
+        +str pilot_callsign
+        +Position launch
+        +Position target
+        +str band
+        +float link_eirp_w
+        +float cruise_speed_mps
+        +float battery_max_s
+        +float departure_s
+    }
+    class FriendlyJammer {
+        +str id
+        +str operator_callsign
+        +Position pos
+        +float eirp_w
+        +list~str~ bands
+    }
+    class Antenna {
+        +float azimuth_deg
+        +float beamwidth_deg
+        +float sidelobe_db
+    }
+    class PlannedCut {
+        +float start_s
+        +float end_s
+    }
+    class EnemyThreat {
+        <<union on type>>
+        +str id
+        +Position pos
+    }
+    class EnemyRadar {
+        +float radius_m
+    }
+    class EnemyJammer {
+        +float eirp_w
+        +list~str~ bands
+    }
+    class MissionConstraints {
+        <<derived at start>>
+        +str mission
+        +list~str~ jammers
+        +list~str~ threats
+    }
+    class Grid {
+        +Position origin
+        +float cell_m
+        +int cols
+        +int rows
+    }
+    class Zone {
+        +str threat
+        +ZoneKind kind
+        +ForbiddenSide forbidden
+        +list~Position~ ring
+    }
+
+    Scenario *-- "1" ReferenceLink : reference_link
+    Scenario *-- "1..*" Mission : missions
+    Scenario *-- "*" FriendlyJammer : friendly_jammers
+    Scenario *-- "*" EnemyThreat : enemy_threats
+    FriendlyJammer *-- "0..1" Antenna : antenna
+    FriendlyJammer *-- "*" PlannedCut : cuts
+    EnemyThreat <|-- EnemyRadar
+    EnemyThreat <|-- EnemyJammer
+    Mission "1" <.. "1" MissionConstraints : mission (id)
+    MissionConstraints *-- "1" Grid : grid
+    MissionConstraints *-- "*" Zone : zones, for this pilot
+    MissionConstraints ..> FriendlyJammer : jammers (ids)
+    MissionConstraints ..> EnemyThreat : threats (ids)
+    Scenario ..> Zone : nominal_zones()
+```
+
+**Runtime state, owned by the engine.** A `PlannedCut` of the scenario file becomes a `Cut` in
+`WorldState` at start, `scheduled`. Cuts are shared: one cut of J3 serves every mission J3
+concerns. Everything else is per mission, in `MissionRuntime`.
+
+```mermaid
+classDiagram
+    direction LR
+    class Engine {
+        +submit(command) list~Event~
+        +request_plans(mission_ids)
+        +tick() list~Event~
+    }
+    class WorldState {
+        +dict~str, Cut~ cuts
+        +dict~str, MissionStatus~ missions
+    }
+    class Cut {
+        +str id
+        +str jammer
+        +float start_s
+        +float end_s
+        +CutStatus status
+        +str requested_by
+        +str requested_for
+    }
+    class MissionRuntime {
+        +int revision
+        +int awaiting
+        +concerns(jammer) bool
+    }
+    class PlanUpdated {
+        +str mission
+        +int revision
+        +PlanStatus status
+    }
+    class PlanMetrics {
+        +float baseline_battery_used_pct
+        +float optimised_battery_used_pct
+        +float saved_pct
+        +float saved_s
+    }
+    class RoutePoint {
+        +float lat
+        +float lon
+        +float t
+        +RouteAction action
+    }
+    class Flight {
+        +int revision
+        +float delay_s
+        +hold(now, delay_s)
+        +arrived(now) bool
+    }
+    class DroneState {
+        +str mission
+        +Position position
+        +RouteAction action
+        +float battery_used_pct
+        +float delay_s
+        +int revision
+    }
+    class Scenario {
+        <<static, see above>>
+    }
+    class Mission {
+        <<static, see above>>
+    }
+    class MissionConstraints {
+        <<derived, see above>>
+    }
+    class FriendlyJammer {
+        <<static, see above>>
+    }
+
+    Engine --> "1" Scenario : scenario
+    Engine *-- "1" WorldState : state
+    Engine *-- "1..*" MissionRuntime : missions
+    WorldState *-- "*" Cut : cuts
+    Cut ..> FriendlyJammer : jammer (id)
+    Cut ..> Mission : requested_for (id)
+    MissionRuntime --> "1" Mission : mission
+    MissionRuntime *-- "1" MissionConstraints : constraints
+    MissionRuntime *-- "0..1" PlanUpdated : plan
+    MissionRuntime *-- "0..1" Flight : flight
+    MissionRuntime *-- "0..1" DroneState : drone
+    PlanUpdated *-- "1" PlanMetrics : metrics
+    PlanUpdated *-- "*" RoutePoint : baseline_route, optimised_route
+    Flight *-- "*" RoutePoint : route
+```
 
 ## Ports
 
@@ -165,8 +383,8 @@ Commands and events belong to the domain. Each adapter translates its own wire f
   in another shape. Demo controls (`clock.set`) only exist on the front.
 - **Every command carries an `actor`**, the sender's callsign. The engine, not the adapter,
   checks it: only the jammer operator may confirm a cut, whatever the channel. The web front
-  chooses its callsign (pilot or operator view); there is no authentication in the proof of
-  concept.
+  signs in with a callsign (`?callsign=`), which sets its role and what it receives, and may
+  only act as that callsign; there is no authentication in the proof of concept.
 - **Accepted shortcut on the WebSocket side.** Domain events are pydantic models; the WebSocket
   adapter sends them as they are, inside the envelope. The front is coupled to the domain, which
   is fine for a proof of concept. TAK needs a real translator anyway.
@@ -175,10 +393,12 @@ Rules enforced today:
 
 | Command | Rejected when |
 |---|---|
-| `cut.schedule` | unknown friendly jammer, start in the past, overlap with another cut of the same jammer |
+| `cut.schedule` | unknown friendly jammer or mission, start in the past, overlap with another cut of the same jammer |
 | `cut.confirm` | unknown cut, already confirmed, actor is not the jammer operator |
 | `cut.cancel` | unknown cut |
-| `mission.launch` | mission not in `planned` |
+| `mission.launch` | unknown mission, mission not in `planned`, actor is neither its pilot nor the command |
+| `inject.delay` | unknown mission, no drone in flight |
+| any | `actor` is not the callsign the connection gave (WebSocket adapter) |
 
 ## Engine
 
@@ -186,17 +406,24 @@ Rules enforced today:
   interleave and the state needs no lock. Subscribers are called synchronously and must not
   block (the hub only enqueues).
 - A rejected command raises `CommandRejected` and leaves the state unchanged.
-- Plans: at startup and after every `cut.schedule`, `cut.confirm` or `cut.cancel`, while the
-  mission is `planned`, the engine requests a plan with the next revision. The earliest takeoff
-  is the current simulated time plus 3 wall-clock seconds at the clock factor (none while
+- Each mission has a `MissionRuntime`: constraints, plan, flight, drone, revision. Revisions
+  count per mission.
+- Plans: at startup for every mission, and after every `cut.schedule`, `cut.confirm` or
+  `cut.cancel` for the missions the cut's jammer concerns, while they are `planned`, the engine
+  requests a plan with the next revision of that mission. The planner only gets the cuts of the
+  jammers that concern the mission. The earliest takeoff is the current simulated time plus
+  3 wall-clock seconds at the clock factor per plan queued in the same batch (none while
   paused), so the route does not start in the past when it arrives. The tick replans a plan
-  whose takeoff time has passed while the mission is still `planned`. A result whose revision is not the latest, or
-  that arrives after launch, is dropped; otherwise it goes out as `plan.updated` and is kept for
-  the snapshot. No route at all gives a notification to the pilot.
+  whose takeoff time has passed while its mission is still `planned`. A result whose revision
+  is not the latest of its mission, or that arrives after launch, is dropped; otherwise it goes
+  out as `plan.updated` and is kept for the snapshot. No route at all gives a notification to
+  the pilot.
+- Cancelling a cut notifies the pilot of every mission its jammer concerns that has not arrived:
+  several drones may rely on one cut. A flying drone that needed it falls back (safety rule).
 - Without a replanner (`create_app(..., replanner=None)`, used by tests), nothing is planned.
 - `tick()` runs every 0.5 s of wall-clock time (app lifespan). It reports confirmed cuts
   starting and ending (a notification to the operator, `jammer.restarted` at the end), replans a
-  stale plan before launch, and moves the simulated drone (`drone.state`).
+  stale plan before launch, and moves each simulated drone (`drone.state`).
 - Launch needs a flyable plan (`approved` or `baseline`), not `preview`: operator confirmation is
   a pre-flight step. Launching after the planned takeoff starts the flight late by the difference.
   Without a replanner, launch needs no plan and nothing flies.
@@ -266,7 +493,16 @@ where ds / dj >= k with k = sqrt(t Ps / Pj). The boundary is a circle of Apollon
 The pilot stands at the launch point, so the zones are fixed for a mission and computed once.
 Jammers whose bands do not contain the mission band have no zone. Zones go to the front (and
 later to TAK) as rings of 64 points with the forbidden side; neither needs to know the model.
-Antenna patterns or terrain would change the shapes, not the contract.
+Terrain would change the shapes, not the contract.
+
+**Directional jammers.** A jammer with an `antenna` has two EIRPs: `eirp_w` inside the main
+beam (a horizontal sector with a hard edge), `eirp_w × 10^(sidelobe_db / 10)` elsewhere. Its
+zone is the main Apollonius disc inside the beam and the sidelobe disc outside it. With k > 1
+both discs contain the jammer, so the zone is star-shaped around it and the ring is sampled
+from the jammer outward (64 vertices across the beam, the rest on the sidelobe disc). The
+`Zone` contract does not change. A directional jammer with k < 1 is rejected at server start:
+its zone would be an unbounded wedge that a ring cannot describe. The beam is horizontal only
+(the planner is 2D plus time) and its edge is hard, without gain roll-off.
 
 **Forbidden cells.** Cuts are piecewise constant in time, so `masks.py` precomputes one mask per
 interval between cut boundaries with numpy, not one per time step. A cell is forbidden when it
@@ -277,7 +513,10 @@ lies on the forbidden side of:
 - a radar disc (hard ban).
 
 The test runs on the cell centre with the boundary pushed out by half the cell diagonal, so a
-cell is forbidden as soon as any part of it may touch a zone.
+cell is forbidden as soon as any part of it may touch a zone. For a directional jammer, a cell
+counts for the main disc if it may touch both that disc and the beam (centre inside, or within
+half a diagonal of an edge ray), and for the sidelobe disc if it may touch both that disc and
+the outside of the beam. This may forbid a few cells too many, never too few.
 
 **Demo calibration, for the jury.** `backend/scenarios/demo.json` uses a 0 dB threshold, a control link
 of 10 W EIRP toward the operating area (for example 1 W behind a 10 dBi ground antenna, assuming
@@ -306,8 +545,8 @@ search runs. The route is safe by construction, not checked afterwards.
 **Off the event loop, with revisions.** A plan takes up to about 2 s of pure Python, so it
 runs in a `ProcessPoolExecutor` with one worker (a thread would hold the GIL, Python's global
 interpreter lock). The worker is spawned, not forked: a forked worker inherits uvicorn's signal
-handlers, ignores SIGTERM and outlives the server. A new request cancels a pending one that has
-not started. Each request carries a revision number; a result that comes back after a newer
+handlers, ignores SIGTERM and outlives the server. Plans of all missions queue on that worker;
+a new request cancels a pending one of the same mission that has not started. Each request carries a revision number; a result that comes back after a newer
 revision was requested is dropped. The result re-enters the engine on the event loop thread,
 then goes out as `plan.updated`.
 
@@ -324,7 +563,21 @@ then goes out as `plan.updated`.
 ## WebSocket protocol
 
 Run the server from `backend/` with `uv run corridor-server` (`--scenario`, `--host`, `--port`,
-`--clock-factor`). Endpoint: `ws://127.0.0.1:8000/ws`.
+`--clock-factor`). Endpoint: `ws://127.0.0.1:8000/ws?callsign=PILOT-1`.
+
+**Who sees what** (`adapters/ws/audience.py`). The callsign in the URL says who connects and
+the scenario gives its role; an unknown or missing callsign is closed with code `4003`. There is
+no authentication, but a command whose `actor` is not that callsign is rejected. The filter runs
+on the server (need to know: a pilot never receives another mission, even hidden):
+
+| | command | pilot | operator |
+|---|---|---|---|
+| Missions (plans, drones, status) | all | its own | those its jammers concern |
+| Friendly jammers and their cuts | all | those that concern its mission | its own |
+| Enemy threats | all | those that concern its mission | none |
+| Nominal zones | all | none (it has its mission zones) | its jammers |
+| Notifications | all | to itself | to itself |
+| Clock | yes | yes | yes |
 
 Client to server:
 
@@ -338,9 +591,10 @@ Server to client:
 { "seq": 1, "sim_time_s": 0.0, "payload": { "type": "cut.scheduled", "cut": { } } }
 ```
 
-- `seq` grows by one per broadcast event. `snapshot`, `ack` and `error` carry the current `seq`
-  without incrementing it.
-- A command gets its events (broadcast to every client) first, then its `ack` (sender only).
+- `seq` grows by one per broadcast event, whoever sees it, so a client may see gaps. `snapshot`,
+  `ack` and `error` carry the current `seq` without incrementing it.
+- A command gets its events (broadcast to every client allowed to see them) first, then its
+  `ack` (sender only).
   A rejected command gets only an `error` with its `req_id`; an unparsable message gets an
   `error` with `req_id: null`.
 - A reconnect gets a fresh `snapshot`, so no client-side resync logic is needed.
@@ -348,7 +602,7 @@ Server to client:
 **`plan.updated`**
 
 ```json
-{ "type": "plan.updated", "revision": 3, "status": "approved",
+{ "type": "plan.updated", "mission": "M1", "revision": 3, "status": "approved",
   "metrics": { "baseline_battery_used_pct": 85, "optimised_battery_used_pct": 52,
                "saved_pct": 38.8, "saved_s": 594 },
   "baseline_route":  [ { "lat": 48.145, "lon": 11.513, "t": 600, "action": "fly" } ],
@@ -369,26 +623,26 @@ Server to client:
 
 | Type | Status | Content |
 |---|---|---|
-| `snapshot` | done | on connect: scenario, derived grid, zones, clock, cuts, mission status, latest plan (or null), latest drone state (or null) |
+| `snapshot` | done | on connect, filtered for the viewer: viewer (callsign, role), scenario, nominal zones, clock, cuts, and per mission its constraints (grid, zones, concerned jammers and threats), status, latest plan (or null), latest drone state (or null) |
 | `clock` | done | sim time, factor, paused; on change only |
-| `cut.scheduled`, `cut.confirmed`, `cut.cancelled` | done | the cut, or its id |
-| `mission.status` | done | `planned`, `flying`, `arrived` |
+| `cut.scheduled`, `cut.confirmed`, `cut.cancelled` | done | the cut (`requested_for`: the mission it was asked for, if any) |
+| `mission.status` | done | mission id; `planned`, `flying`, `arrived` |
 | `notification` | done | `to` (callsign), text, optional action (the button to show and the cut it confirms) |
 | `ack`, `error` | done | `req_id`, reason on error |
-| `plan.updated` | done | see below; after every cut change while the mission is `planned`; arrives after the command's `ack` |
-| `drone.state` | done | position, action, battery used, delay, route revision; every tick in flight |
+| `plan.updated` | done | see above; after every change to the cuts of a jammer that concerns the mission, while it is `planned`; arrives after the command's `ack` |
+| `drone.state` | done | mission id, position, action, battery used, delay, route revision; every tick in flight |
 | `jammer.restarted` | done | jammer id and cut id, with a notification to its operator |
 
 **Client to server**
 
 | Type | Status | Payload |
 |---|---|---|
-| `cut.schedule` | done | jammer, start, end |
+| `cut.schedule` | done | jammer, start, end, optional mission it is asked for |
 | `cut.cancel` | done | cut id |
 | `cut.confirm` | done | cut id |
-| `mission.launch` | done | none (one mission per scenario) |
+| `mission.launch` | done | mission id |
 | `clock.set` | done | factor and/or paused |
-| `inject.delay` | done | `delay_s`: hold the flying drone where it is (demo twist) |
+| `inject.delay` | done | mission id, `delay_s`: hold the flying drone where it is (demo twist) |
 | `inject.enemy_threat` | to come | demo twist |
 
 **Contract.** `schema/ws.schema.json` is generated from the pydantic models
@@ -402,9 +656,10 @@ npx json-schema-to-typescript schema/ws.schema.json > src/corridor-ws.d.ts
 ```
 
 **Rendering on the front.** Cuts are known in advance and routes are timed, so from the snapshot
-and the last `plan.updated` the front can draw the state at any instant, past or future. Zones
-come ready to draw in the snapshot: one ring per threat, filled on its `forbidden` side (for
-`outside`, a polygon covering the grid with the ring as a hole). A friendly jammer zone is
+and the last `plan.updated` of each mission the front can draw the state at any instant, past
+or future. Zones come ready to draw in the snapshot: per mission in `constraints.zones`, and
+mission-independent in `nominal_zones`; one ring per threat, filled on its `forbidden` side (for
+`outside`, a polygon covering the mission grid with the ring as a hole). A friendly jammer zone is
 active unless one of its cuts covers the instant shown.
 
 ## Dependencies
@@ -431,6 +686,7 @@ The defaults below do not change the layout; they live in the planner or in `saf
 | Replan lead time | 3 wall-clock seconds (`PLAN_LEAD_WALL_S`); two queued plans can exceed it |
 | Export altitude | one value for the whole route (default 100 m above launch); the planner stays 2D |
 | Export waypoints | every turn of the grid route (about 20 on the demo detour); no simplification, a shortcut could clip a zone |
-| ATAK delivery | on demand (`POST /api/export/atak`); not tied to an approval step yet; same route uid per mission, so a resend replaces the route on the phone |
+| ATAK delivery | on demand (`POST /api/export/atak?mission_id=...`); not tied to an approval step yet; same route uid per mission, so a resend replaces the route on the phone |
 | Latest take-off | 5 s steps up to 15 min with the safety rule (margins and 2 s tolerance); none when the route relies on no cut |
+| Directional jammers | hard beam edge, sidelobes required (`sidelobe_db`), friendly jammers only, k < 1 rejected, not used in `demo.json` |
 | Planner choices made in step 3 | SIPP and a 30 s / 5 s takeoff sweep, cuts must save more than 1 s, cells forbidden if any part may touch a zone, radar is a hard ban, margins 30 s / 60 s as constants in `plan.py` |

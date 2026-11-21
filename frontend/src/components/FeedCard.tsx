@@ -7,7 +7,7 @@ import { useStore } from '../store'
 export function FeedCard() {
   const snapshot = useStore((s) => s.snapshot)
   const feed = useStore((s) => s.feed)
-  const actor = useStore((s) => s.actor)
+  const actor = useStore((s) => s.callsign)
   const cuts = useStore((s) => s.cuts)
   const [mineOnly, setMineOnly] = useState(false)
   if (!snapshot) return null
@@ -36,7 +36,7 @@ export function FeedCard() {
                     size="compact-xs"
                     mt={4}
                     disabled={actor !== n.to}
-                    title={actor !== n.to ? `Act as ${n.to} to confirm` : undefined}
+                    title={actor !== n.to ? `Only ${n.to} can confirm` : undefined}
                     onClick={() => send({ type: action.command, cut: action.cut })}
                   >
                     Confirm {action.cut}
