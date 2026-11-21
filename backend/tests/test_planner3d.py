@@ -8,13 +8,14 @@ import pytest
 from corridor.domain.events import RoutePoint
 from corridor.domain.geo import Grid, LocalFrame, Position
 from corridor.domain.planner.astar import earliest_path
-from corridor.domain.planner.layers import CLIMB_MPS, forbidden_cells, mission_layers
+from corridor.domain.planner.layers import CLIMB_MPS, forbidden_cells, link_cells, mission_layers
 from corridor.domain.planner.masks import Mask, TimedMasks, layered_timed_masks
 from corridor.domain.planner.plan import ENTRY_MARGIN_S, EXIT_MARGIN_S, plan_mission
 from corridor.domain.safety import Flight, LevelCells, schedule_violation
 from corridor.domain.scenario import Scenario
 from corridor.domain.state import Cut
 from corridor.domain.zones import mission_constraints
+from corridor.domain.zones3d import pilot_signal
 
 FOREVER = 1e6
 
@@ -166,6 +167,21 @@ def test_3d_route_stays_out_of_every_zone_at_its_level(scenario: Scenario, cuts:
                 assert not always[level, row, col], (t, level)
                 for jammer in cells.jammers(here, {level}):
                     assert any(j == jammer and s <= t <= e for j, s, e in windows), (t, jammer)
+
+
+def test_cells_out_of_the_pilots_reach_are_always_forbidden(scenario: Scenario) -> None:
+    scenario = three_d(scenario)
+    m1 = scenario.missions[0]
+    grid = mission_constraints(scenario, m1, 100).grid
+    weak = float(np.median(pilot_signal(scenario, m1, grid)[0]))
+    m1 = m1.model_copy(update={"link_min_dbm": weak})
+    link = link_cells(scenario, m1, grid)
+    assert link[0].mean() >= 0.5  # half the lowest level, widened
+    assert link[-1].sum() < link[0].sum()  # higher up, the pilot reaches farther
+    _, always = forbidden_cells(scenario, m1, grid)
+    assert always[link].all()
+    deaf = m1.model_copy(update={"link_min_dbm": -1000.0})
+    assert not link_cells(scenario, deaf, grid).any()
 
 
 def test_3d_uses_the_cut_too(scenario: Scenario) -> None:

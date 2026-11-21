@@ -457,6 +457,7 @@ const LEGEND: { label: string; color: string; kind: 'area' | 'line' | 'dash' }[]
   { label: 'Radar', color: COLORS.radar, kind: 'area' },
   { label: 'Building (brighter = taller)', color: '#ced4da', kind: 'area' },
   { label: 'Zone to avoid (not enforced yet)', color: COLORS.avoid, kind: 'area' },
+  { label: "Out of the pilot's reach (3D, at the level)", color: COLORS.link, kind: 'area' },
   { label: 'Detour (all jammers on)', color: COLORS.baseline, kind: 'dash' },
   { label: 'Planned route', color: ROUTE_COLORS.approved, kind: 'line' },
   { label: 'Route awaiting confirmation', color: ROUTE_COLORS.preview, kind: 'line' },

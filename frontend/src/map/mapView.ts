@@ -42,6 +42,8 @@ export const COLORS = {
   enemy: '#9c36b5',
   radar: '#fd7e14',
   avoid: '#fab005',
+  /** 3D: where the pilot's signal is too weak. */
+  link: '#868e96',
   baseline: '#adb5bd',
   optimised: '#22b8cf',
   preview: '#f08c00',
@@ -397,7 +399,7 @@ export function createMapView(container: HTMLElement): MapView {
     const flat = level ? scene.missionZones.filter((z) => z.kind === 'avoid') : scene.missionZones
     const levelFeatures: Feature[] = (level?.features ?? []).map((f) => {
       const threat = String(f.properties?.threat ?? '')
-      const kind = f.properties?.kind as Zone['kind']
+      const kind = f.properties?.kind as LevelKind
       return { ...f, properties: { ...f.properties, ...kindStyle(kind, states[threat] ?? 'on') } }
     })
     setData('zones', { type: 'FeatureCollection', features: [...zoneFeatures(flat, outer), ...levelFeatures] })
@@ -587,7 +589,11 @@ function zoneStyle(z: Zone, state: ZoneState): { color: string; opacity: number 
   return kindStyle(z.kind, state)
 }
 
-function kindStyle(kind: Zone['kind'], state: ZoneState): { color: string; opacity: number } {
+/** Kind of a 3D outline: a zone kind, or ``link`` where the pilot's signal is too weak. */
+type LevelKind = Zone['kind'] | 'link'
+
+function kindStyle(kind: LevelKind, state: ZoneState): { color: string; opacity: number } {
+  if (kind === 'link') return { color: COLORS.link, opacity: 0.3 }
   if (kind === 'radar') return { color: COLORS.radar, opacity: 0.2 }
   if (kind === 'enemy_jammer') return { color: COLORS.enemy, opacity: 0.2 }
   if (kind === 'avoid') return { color: COLORS.avoid, opacity: 0.12 }
