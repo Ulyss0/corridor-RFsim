@@ -20,6 +20,10 @@ export type Mission = string | null;
 export type Type1 = "cut.cancel";
 export type Actor1 = string;
 export type Cut = string;
+/**
+ * Reason for cancellation or refusal.
+ */
+export type Reason = string | null;
 export type Type2 = "cut.confirm";
 export type Actor2 = string;
 export type Cut1 = string;
@@ -309,7 +313,7 @@ export type Type23 = "error";
  * None when the message could not be parsed.
  */
 export type ReqId2 = string | null;
-export type Reason = string;
+export type Reason1 = string;
 
 /**
  * client: messages the front end sends; server: messages it receives.
@@ -346,6 +350,7 @@ export interface CancelCut {
   type: Type1;
   actor: Actor1;
   cut: Cut;
+  reason?: Reason;
 }
 /**
  * This interface was referenced by `CorridorWs`'s JSON-Schema
@@ -841,7 +846,7 @@ export interface Ack {
 export interface Error {
   type: Type23;
   req_id: ReqId2;
-  reason: Reason;
+  reason: Reason1;
 }
 /**
  * This interface was referenced by `CorridorWs`'s JSON-Schema

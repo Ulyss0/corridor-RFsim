@@ -102,6 +102,18 @@ def test_cancel_cut_tells_the_pilots_concerned(two_missions: Scenario) -> None:
         engine.submit(CancelCut(actor=EW, cut=cut_id))
 
 
+def test_cancel_cut_with_reason(two_missions: Scenario) -> None:
+    engine = make_engine(two_missions)
+    cut_id = schedule(engine)
+    cancelled, notif = engine.submit(
+        CancelCut(actor=EW, cut=cut_id, reason="Tirs d'artillerie / Prise d'obus")
+    )
+    assert isinstance(cancelled, CutCancelled)
+    assert isinstance(notif, Notification)
+    assert "Tirs d'artillerie / Prise d'obus" in notif.text
+    assert notif.to == "PILOT-1"
+
+
 def test_cut_remembers_its_mission(engine: Engine) -> None:
     (scheduled, notification) = engine.submit(
         ScheduleCut(actor="PILOT-1", jammer="J3", start_s=900, end_s=1260, mission="M1")

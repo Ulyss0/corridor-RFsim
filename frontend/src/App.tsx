@@ -1,6 +1,8 @@
 import { Alert, ScrollArea, Stack } from '@mantine/core'
+import { useState } from 'react'
 import { CutsCard } from './components/CutsCard'
 import { FeedCard } from './components/FeedCard'
+import { GroundTeamScreen } from './components/GroundTeamScreen'
 import { MapPanel } from './components/MapPanel'
 import { MissionCard } from './components/MissionCard'
 import { MissionsCard } from './components/MissionsCard'
@@ -14,13 +16,34 @@ export default function App() {
   const callsign = useStore((s) => s.callsign)
   const lastError = useStore((s) => s.lastError)
   const setError = useStore((s) => s.setError)
-  const hasSnapshot = useStore((s) => s.snapshot !== null)
+  const snapshot = useStore((s) => s.snapshot)
+  const role = snapshot?.viewer.role
+  const [viewModeOverride, setViewModeOverride] = useState<'command' | 'ground-team' | null>(null)
 
   if (!callsign) return <SignIn />
 
+  const isGroundTeam =
+    (role === 'operator' && viewModeOverride !== 'command') ||
+    (role === 'command' && viewModeOverride === 'ground-team')
+
+  if (isGroundTeam) {
+    return (
+      <GroundTeamScreen
+        onSwitchToCommand={
+          role === 'command' ? () => setViewModeOverride('command') : undefined
+        }
+      />
+    )
+  }
+
   return (
     <div className="layout">
-      <TopBar />
+      <TopBar
+        isGroundTeamView={false}
+        onToggleGroundTeam={
+          role === 'command' ? () => setViewModeOverride('ground-team') : undefined
+        }
+      />
       <div className="main">
         <MapPanel />
         <ScrollArea className="side">
@@ -30,7 +53,7 @@ export default function App() {
                 {lastError}
               </Alert>
             )}
-            {!hasSnapshot && <Alert color="yellow">Waiting for corridor-server on /ws…</Alert>}
+            {!snapshot && <Alert color="yellow">Waiting for corridor-server on /ws…</Alert>}
             <NewMissionCard />
             <MissionsCard />
             <MissionCard />

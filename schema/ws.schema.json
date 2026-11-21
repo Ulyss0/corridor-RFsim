@@ -85,6 +85,19 @@
         "cut": {
           "title": "Cut",
           "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Reason for cancellation or refusal.",
+          "title": "Reason"
         }
       },
       "required": [

@@ -8,7 +8,12 @@ import { ROLE_COLOR } from './colors'
 const SPEEDS = ['10', '20', '30', '60']
 const CONN_COLOR = { idle: 'gray', open: 'green', connecting: 'yellow', closed: 'red' } as const
 
-export function TopBar() {
+interface TopBarProps {
+  onToggleGroundTeam?: () => void
+  isGroundTeamView?: boolean
+}
+
+export function TopBar({ onToggleGroundTeam, isGroundTeamView }: TopBarProps = {}) {
   const conn = useStore((s) => s.conn)
   const snapshot = useStore((s) => s.snapshot)
   const clock = useStore((s) => s.clock)
@@ -61,6 +66,16 @@ export function TopBar() {
         {role === 'pilot' && (
           <Button size="xs" onClick={() => openRequest(lastLaunch())}>
             New mission
+          </Button>
+        )}
+        {role === 'command' && onToggleGroundTeam && (
+          <Button
+            size="xs"
+            variant="light"
+            color="teal"
+            onClick={onToggleGroundTeam}
+          >
+            {isGroundTeamView ? 'Vue CMD' : 'Terminal Équipe Sol'}
           </Button>
         )}
         <Text size="sm" fw={600}>{callsign}</Text>
