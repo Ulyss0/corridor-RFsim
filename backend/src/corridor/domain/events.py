@@ -103,16 +103,25 @@ class RoutePoint(Model):
     action: RouteAction
     alt_m: float | None = Field(
         default=None,
-        description="Height above the ground, metres; None while the planner is 2D.",
+        description=(
+            "Height above the clearance ground (highest ground within a cell around), metres;"
+            " 0 on the ground; None in 2D."
+        ),
+    )
+    amsl_m: float | None = Field(
+        default=None, description="Altitude above sea level, metres; None in 2D."
     )
 
 
 class ProfilePoint(Model):
-    """A sample of the altitude profile under a route."""
+    """A sample of the route in 3D, for the altitude profile and a 3D view."""
 
     distance_m: float = Field(description="Along the route from take-off.")
-    ground_m: float = Field(description="Ground elevation above sea level; 0 without a map.")
-    alt_m: float | None = Field(description="Drone height above the ground, None if unknown.")
+    lat: float
+    lon: float
+    ground_m: float = Field(description="Ground surface above sea level; 0 without a map.")
+    alt_m: float | None = Field(description="As RoutePoint.alt_m, interpolated; None in 2D.")
+    amsl_m: float | None = Field(description="Drone altitude above sea level; None in 2D.")
 
 
 class PlanMetrics(Model):

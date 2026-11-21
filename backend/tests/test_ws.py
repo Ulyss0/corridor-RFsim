@@ -52,8 +52,9 @@ def test_snapshot_then_commands(scenario: Scenario) -> None:
 
 
 def test_events_reach_every_client_and_bad_messages_get_an_error(scenario: Scenario) -> None:
-    client = TestClient(create_app(scenario, clock_factor=20, cell_m=100))
+    app = create_app(scenario, clock_factor=20, cell_m=100)
     with (
+        TestClient(app) as client,  # one event loop for every connection
         client.websocket_connect("/ws?callsign=CMD") as a,
         client.websocket_connect("/ws?callsign=PILOT-1") as b,
     ):
@@ -90,8 +91,9 @@ def test_a_client_only_acts_as_itself(scenario: Scenario) -> None:
 
 
 def test_each_role_sees_its_own_part(two_missions: Scenario) -> None:
-    client = TestClient(create_app(two_missions, clock_factor=20, cell_m=100))
+    app = create_app(two_missions, clock_factor=20, cell_m=100)
     with (
+        TestClient(app) as client,  # one event loop for every connection
         client.websocket_connect("/ws?callsign=CMD") as command,
         client.websocket_connect("/ws?callsign=PILOT-1") as pilot,
         client.websocket_connect("/ws?callsign=EW-J4") as operator,
@@ -185,27 +187,20 @@ def test_rf_coverage_endpoint(scenario: Scenario) -> None:
     assert "threat_id" in first["properties"]
 
 
-def test_rf_heatmap_endpoint(scenario: Scenario) -> None:
+def test_rf_heatmap_endpoint_returns_a_png_image_once_per_configuration(
+    scenario: Scenario,
+) -> None:
     client = TestClient(create_app(scenario, clock_factor=20, cell_m=100))
     response = client.get("/api/rf/heatmap?step_m=500")
     assert response.status_code == 200
     data = response.json()
-    assert data["type"] == "FeatureCollection"
-    assert len(data["features"]) > 0
-    pt0 = data["features"][0]
-    assert pt0["geometry"]["type"] == "Point"
-    assert "weight" in pt0["properties"]
-    assert "js_db" in pt0["properties"]
-    assert "status" in pt0["properties"]
+    assert data["image"].startswith("data:image/png;base64,")
+    (w, n), (e, n2), (e2, s), (w2, s2) = data["coordinates"]
+    assert (w, e, n, s) == (w2, e2, n2, s2)
+    assert w < e and s < n
+    assert data["step_m"] == 500
 
-    # Test cells=true polygon quads
-    resp_cells = client.get("/api/rf/heatmap?step_m=500&cells=true")
-    assert resp_cells.status_code == 200
-    data_cells = resp_cells.json()
-    cell0 = data_cells["features"][0]
-    assert cell0["geometry"]["type"] == "Polygon"
-    assert "color" in cell0["properties"]
-    assert "opacity" in cell0["properties"]
+    assert client.get("/api/rf/heatmap?step_m=500").json() == data
 
 
 def test_rf_probe_endpoint(scenario: Scenario) -> None:
@@ -225,8 +220,9 @@ def test_a_requested_mission_resyncs_who_sees_it(two_missions: Scenario) -> None
     """PILOT-1 starts with no mission: its request brings M1's jammer into its view."""
     data = two_missions.model_dump(mode="json")
     m1 = data["missions"].pop(0)
-    client = TestClient(create_app(Scenario.model_validate(data), clock_factor=20, cell_m=100))
+    app = create_app(Scenario.model_validate(data), clock_factor=20, cell_m=100)
     with (
+        TestClient(app) as client,  # one event loop for every connection
         client.websocket_connect("/ws?callsign=PILOT-1") as pilot,
         client.websocket_connect("/ws?callsign=PILOT-2") as other,
         client.websocket_connect("/ws?callsign=EW-J3") as operator,
@@ -268,9 +264,10 @@ def test_rf_endpoints_without_any_mission(scenario: Scenario) -> None:
 
 def test_an_updated_mission_resyncs_every_client(two_missions: Scenario) -> None:
     """M2 moves from J4 onto J3: J4's operator loses it, J3's operator gains it."""
-    client = TestClient(create_app(two_missions, clock_factor=20, cell_m=100))
+    app = create_app(two_missions, clock_factor=20, cell_m=100)
     m1 = two_missions.missions[0].model_dump(mode="json")
     with (
+        TestClient(app) as client,  # one event loop for every connection
         client.websocket_connect("/ws?callsign=PILOT-2") as pilot,
         client.websocket_connect("/ws?callsign=EW-J4") as old_operator,
         client.websocket_connect("/ws?callsign=EW-J3") as new_operator,
@@ -293,3 +290,23 @@ def test_an_updated_mission_resyncs_every_client(two_missions: Scenario) -> None
         gained = [receive(new_operator)["payload"] for _ in range(2)]
         assert [p["type"] for p in gained] == ["mission.updated", "snapshot"]
         assert [m["constraints"]["mission"] for m in gained[1]["missions"]] == ["M1", "M2"]
+
+
+def test_buildings_endpoint_is_empty_without_buildings(scenario: Scenario) -> None:
+    client = TestClient(create_app(scenario, clock_factor=20, cell_m=100))
+    response = client.get("/api/buildings")
+    assert response.status_code == 200
+    assert response.json() == {"type": "FeatureCollection", "features": []}
+
+
+def test_zones3d_endpoint_gives_outlines_per_level_in_3d(scenario: Scenario) -> None:
+    flat = TestClient(create_app(scenario, clock_factor=20, cell_m=100))
+    assert flat.get("/api/zones3d", params={"mission_id": "M1"}).json()["features"] == []
+    assert flat.get("/api/zones3d", params={"mission_id": "M9"}).status_code == 404
+    terrain = scenario.terrain.model_copy(update={"mode": "3d"})
+    deep = TestClient(create_app(scenario.model_copy(update={"terrain": terrain}), 20, 100))
+    features = deep.get("/api/zones3d", params={"mission_id": "M1"}).json()["features"]
+    assert {f["properties"]["threat"] for f in features} >= {"J3", "E1", "R1"}
+    levels = {f["properties"]["level_m"] for f in features}
+    assert levels == set(scenario.terrain.levels_m)
+    assert all(f["geometry"]["type"] == "Polygon" for f in features)

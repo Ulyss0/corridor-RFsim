@@ -11,10 +11,10 @@
       "id": "J-HARBOUR",
       "operator_callsign": "EW-HK",
       "pos": {
-        "lat": 22.288,
-        "lon": 114.17
+        "lat": 22.2905,
+        "lon": 114.1925
       },
-      "eirp_w": 20,
+      "eirp_w": 2,
       "bands": [
         "2.4GHz"
       ],
@@ -26,16 +26,20 @@
       "type": "jammer",
       "id": "E-PEAK",
       "pos": {
-        "lat": 22.275,
-        "lon": 114.145
+        "lat": 22.2759,
+        "lon": 114.1455
       },
-      "eirp_w": 30,
+      "eirp_w": 1,
       "bands": [
         "2.4GHz"
       ]
     }
   ],
-  "terrain": { "dem": "copernicus_hongkong.tif" },
+  "terrain": {
+    "dem": "copernicus_hongkong.tif",
+    "buildings": "buildings_hongkong.geojson",
+    "mode": "3d"
+  },
   "pilots": [
     {
       "callsign": "PILOT-1",
@@ -53,12 +57,12 @@
       "id": "M-HK",
       "pilot_callsign": "PILOT-1",
       "launch": {
-        "lat": 22.302,
-        "lon": 114.16
+        "lat": 22.2938,
+        "lon": 114.1712
       },
       "target": {
-        "lat": 22.28,
-        "lon": 114.21
+        "lat": 22.2865,
+        "lon": 114.2135
       },
       "departure_s": 600
     }

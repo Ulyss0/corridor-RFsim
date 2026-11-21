@@ -1,8 +1,10 @@
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
-import { ActionIcon, Button, Tooltip } from '@mantine/core'
+import { ActionIcon, Button, SegmentedControl, Tooltip } from '@mantine/core'
+import type { FeatureCollection } from 'geojson'
 import { send } from '../api/client'
 import { focusPoints, friendlyZoneState, positionAt } from '../domain/view'
 import { useViewTime } from '../hooks/useSimNow'
+import { levelColor } from '../map/levels'
 import { COLORS, createMapView, ROUTE_COLORS, type DroneMark, type MapView } from '../map/mapView'
 import { useSelectedMission, useStore } from '../store'
 import { CrosshairIcon, DroneIcon, LayersIcon } from './Icons'
@@ -54,6 +56,10 @@ export function MapPanel() {
   const [showRf, setShowRf] = useState(false)
   const [showHeatmap, setShowHeatmap] = useState(false)
   const [showRelief, setShowRelief] = useState(true)
+  const [showBuildings, setShowBuildings] = useState(true)
+  // 3D: the selected mission's zones per flight level, from the server; one level shown.
+  const [zones3d, setZones3d] = useState<{ mission: string; zones: FeatureCollection } | null>(null)
+  const [level, setLevel] = useState(0)
   const [is3D, setIs3D] = useState(false)
   const [legendOpen, setLegendOpen] = useState(false)
   const [probe, setProbe] = useState<ProbeData | null>(null)
@@ -81,6 +87,31 @@ export function MapPanel() {
     }
   }, [])
 
+  const is3dScenario = snapshot?.scenario.terrain.mode === '3d'
+  const levels = snapshot?.scenario.terrain.levels_m ?? []
+
+  // 3D zones of the selected mission: fetched again with each snapshot (threats added or removed
+  // come with one), shown one level at a time.
+  useEffect(() => {
+    if (!is3dScenario || !selected) return
+    let active = true
+    fetch(`/api/zones3d?mission_id=${encodeURIComponent(selected)}`)
+      .then((r) => (r.ok ? (r.json() as Promise<FeatureCollection>) : null))
+      .then((zones) => {
+        if (active && zones) setZones3d({ mission: selected, zones })
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [is3dScenario, selected, snapshot])
+
+  const levelZones = useMemo<FeatureCollection | null>(() => {
+    if (!is3dScenario || !zones3d || zones3d.mission !== selected) return null
+    const features = zones3d.zones.features.filter((f) => f.properties?.level === level)
+    return { ...zones3d.zones, features }
+  }, [is3dScenario, zones3d, selected, level])
+
   // Scene: every grid in view, the selected mission's zones over the nominal footprints. Grids
   // and zones only come with the snapshot, so plans and drones do not redraw it.
   useEffect(() => {
@@ -94,8 +125,9 @@ export function MapPanel() {
       missionZones: mission?.zones ?? [],
       nominalZones: snapshot.nominal_zones,
       movable,
+      levelZones,
     })
-  }, [snapshot, selected, movable])
+  }, [snapshot, selected, movable, levelZones])
 
   useEffect(() => {
     view.current?.setLayerVisibility({
@@ -104,8 +136,9 @@ export function MapPanel() {
       rf: showRf,
       heatmap: showHeatmap,
       relief: showRelief,
+      buildings: showBuildings,
     })
-  }, [showZones, showBaseline, showRf, showHeatmap, showRelief])
+  }, [showZones, showBaseline, showRf, showHeatmap, showRelief, showBuildings])
 
   useEffect(() => {
     if (!showRf) return
@@ -126,8 +159,10 @@ export function MapPanel() {
       view.current?.setRfHeatmap(null)
       return
     }
+    // J/S is against one pilot link: the selected mission's (the server falls back to the first)
     let active = true
-    fetch('/api/rf/heatmap?cells=true')
+    const query = selected ? `?mission_id=${encodeURIComponent(selected)}` : ''
+    fetch(`/api/rf/heatmap${query}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (active && data) view.current?.setRfHeatmap(data)
@@ -136,7 +171,7 @@ export function MapPanel() {
     return () => {
       active = false
     }
-  }, [showHeatmap, snapshot])
+  }, [showHeatmap, snapshot, selected])
 
   useEffect(() => {
     if (!view.current) return
@@ -292,6 +327,15 @@ export function MapPanel() {
           </Button>
           <Button
             size="compact-xs"
+            variant={showBuildings ? 'light' : 'subtle'}
+            color="gray"
+            onClick={() => setShowBuildings((v) => !v)}
+            title="Toggle buildings, brighter when taller"
+          >
+            Buildings
+          </Button>
+          <Button
+            size="compact-xs"
             variant={is3D ? 'filled' : 'subtle'}
             color={is3D ? 'teal' : 'gray'}
             onClick={() => {
@@ -338,6 +382,21 @@ export function MapPanel() {
             Legend
           </Button>
         </div>
+
+        {is3dScenario && levels.length > 0 && (
+          <div className="map-hud-bar" title="3D: zones at one flight level; the route is coloured by level">
+            <span style={{ fontSize: 11, color: '#adb5bd', padding: '0 4px' }}>Zones at</span>
+            <SegmentedControl
+              size="xs"
+              value={String(level)}
+              onChange={(v) => setLevel(Number(v))}
+              data={levels.map((m, i) => ({
+                value: String(i),
+                label: <span style={{ color: levelColor(i), fontWeight: 600 }}>{m} m</span>,
+              }))}
+            />
+          </div>
+        )}
 
         {legendOpen && <TacticalLegend onClose={() => setLegendOpen(false)} />}
       </div>
@@ -398,6 +457,7 @@ const LEGEND: { label: string; color: string; kind: 'area' | 'line' | 'dash' }[]
   { label: 'Cut confirmed (passable)', color: COLORS.friendlyCut, kind: 'area' },
   { label: 'Enemy jammer', color: COLORS.enemy, kind: 'area' },
   { label: 'Radar', color: COLORS.radar, kind: 'area' },
+  { label: 'Building (brighter = taller)', color: '#ced4da', kind: 'area' },
   { label: 'Zone to avoid (not enforced yet)', color: COLORS.avoid, kind: 'area' },
   { label: 'Detour (all jammers on)', color: COLORS.baseline, kind: 'dash' },
   { label: 'Planned route', color: ROUTE_COLORS.approved, kind: 'line' },

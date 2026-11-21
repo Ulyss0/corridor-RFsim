@@ -35,7 +35,7 @@ from corridor.domain.planner.masks import (
 )
 from corridor.domain.scenario import EnemyJammer, Mission, Scenario
 from corridor.domain.state import Cut
-from corridor.domain.zones import forbidden_shapes
+from corridor.domain.zones import ZoneKind, forbidden_shapes
 from corridor.domain.zones3d import forbidden, jamming_zones
 
 CLIMB_MPS = 3.0
@@ -82,20 +82,36 @@ def forbidden_cells(
     shape = (len(scenario.terrain.levels_m), grid.rows, grid.cols)
     always: Cells = np.zeros(shape, dtype=np.bool_)
     friendly: dict[str, Cells] = {}
+    for threat, (kind, cells) in cells_by_threat(scenario, mission, grid).items():
+        if kind == "friendly_jammer":
+            friendly[threat] = cells
+        else:
+            always |= cells
+    return friendly, always
+
+
+def cells_by_threat(
+    scenario: Scenario, mission: Mission, grid: Grid
+) -> dict[str, tuple[ZoneKind, Cells]]:
+    """Cells each jammer and radar forbids at each level, as the planner sees them (widened,
+    margins included), with its kind."""
     friendly_ids = {j.id for j in scenario.friendly_jammers}
     enemies = {t.id: t for t in scenario.enemy_threats if isinstance(t, EnemyJammer)}
+    out: dict[str, tuple[ZoneKind, Cells]] = {}
     for jammer, js_db in jamming_zones(scenario, mission, grid).items():
         cells = grow(forbidden(scenario, js_db), 1)
         if jammer in friendly_ids:
-            friendly[jammer] = cells
+            out[jammer] = ("friendly_jammer", cells)
         else:
             margin = error_cells(scenario, mission, enemies[jammer], grid.cell_m)
-            always |= grow(cells, margin)
+            out[jammer] = ("enemy_jammer", grow(cells, margin))
     frame = LocalFrame(mission.launch)
+    levels = len(scenario.terrain.levels_m)
     for zone in forbidden_shapes(scenario, mission):
         if zone.kind == "radar":
-            always |= shape_mask(grid, zone, frame)[np.newaxis]
-    return friendly, always
+            disc = shape_mask(grid, zone, frame)
+            out[zone.threat] = ("radar", np.repeat(disc[np.newaxis], levels, axis=0))
+    return out
 
 
 def grow(cells: Cells, n: int) -> Cells:

@@ -1,6 +1,7 @@
 """Terrain: elevation file and flight levels in the scenario, ground per grid, route profile."""
 
 import itertools
+import json
 from pathlib import Path
 
 import numpy as np
@@ -15,7 +16,7 @@ from corridor.domain.planner.plan import MissionPlan
 from corridor.domain.rf.dem import RasterDem
 from corridor.domain.scenario import Mission, Scenario, Terrain, load_scenario
 from corridor.domain.state import Cut
-from corridor.domain.terrain import PROFILE_STEP_M, ground_cells, profile
+from corridor.domain.terrain import PROFILE_STEP_M, ground_cells, profile, with_altitude
 from corridor.engine.clock import SimClock
 from corridor.engine.engine import Engine
 from corridor.engine.replan import PlanDone
@@ -242,3 +243,86 @@ def test_plans_carry_the_profile_of_their_route(scenario: Scenario) -> None:
 def test_elevation_file_must_stay_in_the_data_folder(name: str) -> None:
     with pytest.raises(ValueError, match="must be inside"):
         terrain.check_terrain(Terrain(dem=name))
+
+
+def test_route_points_get_their_altitude_above_sea_level(hill: Terrain) -> None:
+    south_west = Position(lat=ORIGIN.lat - 100 * PIXEL_DEG, lon=ORIGIN.lon)
+    grid = Grid(origin=south_west, cell_m=100, cols=20, rows=20)
+    ground = ground_cells(hill, grid)
+    top = pixel_centre(50, 50)
+    route = [
+        RoutePoint(lat=top.lat, lon=top.lon, t=0, action="ground", alt_m=0.0),
+        RoutePoint(lat=top.lat, lon=top.lon, t=10, action="fly", alt_m=60.0),
+    ]
+    on_ground, flying = with_altitude(hill, grid, route)
+    cell = grid.cell_of(top)
+    assert cell is not None
+    col, row = cell
+    assert on_ground.amsl_m == pytest.approx(ground.centre[row, col], abs=0.1)
+    assert flying.amsl_m == pytest.approx(ground.high[row, col] + 60, abs=0.1)
+    flat_route = [RoutePoint(lat=top.lat, lon=top.lon, t=0, action="fly")]
+    assert with_altitude(hill, grid, flat_route) == flat_route  # 2D: no height, no altitude
+
+
+def test_profile_carries_position_and_altitude(hill: Terrain) -> None:
+    south_west = Position(lat=ORIGIN.lat - 100 * PIXEL_DEG, lon=ORIGIN.lon)
+    grid = Grid(origin=south_west, cell_m=100, cols=20, rows=20)
+    frame = LocalFrame(pixel_centre(50, 0))
+    a, b = frame.to_position(0, 0), frame.to_position(1500, 0)
+    route = [
+        RoutePoint(lat=a.lat, lon=a.lon, t=0, action="fly", alt_m=30.0),
+        RoutePoint(lat=b.lat, lon=b.lon, t=150, action="fly", alt_m=30.0),
+    ]
+    high = ground_cells(hill, grid).high
+    for point in profile(hill, route, grid):
+        cell = grid.cell_of(Position(lat=point.lat, lon=point.lon))
+        assert cell is not None
+        assert point.amsl_m == pytest.approx(high[cell[1], cell[0]] + 30, abs=0.1)
+        assert point.amsl_m >= point.ground_m + 30 - 0.1  # never below the surface + height
+    assert all(p.amsl_m is None for p in profile(hill, route))  # no grid, no altitude
+
+
+def tower(tmp_path: Path, height_m: float) -> Path:
+    """One building about 40 m square at pixel (row 30, col 30) of a raster at ORIGIN."""
+    corner = pixel_centre(30, 30)
+    d = 0.0002
+    ring = [
+        [corner.lon, corner.lat],
+        [corner.lon + d, corner.lat],
+        [corner.lon + d, corner.lat + d],
+        [corner.lon, corner.lat + d],
+        [corner.lon, corner.lat],
+    ]
+    feature = {
+        "type": "Feature",
+        "properties": {"height_m": height_m, "source": "height"},
+        "geometry": {"type": "Polygon", "coordinates": [ring]},
+    }
+    path = tmp_path / "buildings.geojson"
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": [feature]}))
+    return path
+
+
+def test_buildings_are_raised_into_the_ground(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(terrain, "DATA_DIR", tmp_path)
+    write_raster(tmp_path / "flat.tif", np.full((60, 60), 100.0))
+    tower(tmp_path, 200.0)
+    south_west = Position(lat=ORIGIN.lat - 60 * PIXEL_DEG, lon=ORIGIN.lon)
+    grid = Grid(origin=south_west, cell_m=100, cols=12, rows=18)
+    plain = ground_cells(Terrain(dem="flat.tif"), grid)
+    built = ground_cells(Terrain(dem="flat.tif", buildings="buildings.geojson"), grid)
+    cell = grid.cell_of(pixel_centre(30, 30))
+    assert cell is not None
+    col, row = cell
+    assert plain.high[row, col] == pytest.approx(100)
+    assert built.high[row, col] == pytest.approx(300)  # ground 100 + 200 m tower
+    assert built.high[row, col + 1] == pytest.approx(300)  # one cell of margin around
+    assert built.high[row, col + 3] == pytest.approx(100)
+    assert built.low[row, col] == pytest.approx(100)  # the cell has open ground too
+
+
+def test_buildings_need_an_elevation_file() -> None:
+    with pytest.raises(ValidationError, match="need an elevation file"):
+        Terrain(buildings="buildings.geojson")

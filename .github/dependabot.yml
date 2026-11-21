@@ -1,0 +1,28 @@
+# Weekly dependency bumps, one grouped PR per ecosystem. The CI checks each one.
+version: 2
+updates:
+  # Actions are pinned by commit SHA in .github/workflows/: Dependabot moves the SHA and the
+  # tag comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: uv
+    directory: /backend
+    schedule:
+      interval: weekly
+    groups:
+      backend:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      frontend:
+        patterns: ["*"]

@@ -14,6 +14,7 @@ leave a view (an operator whose jammer it no longer crosses).
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Callable
@@ -21,10 +22,12 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import ValidationError
 
 from corridor.adapters.ws.audience import Audience, Viewer
 from corridor.adapters.ws.hub import Hub, Outbox
+from corridor.adapters.ws.outlines import level_outlines
 from corridor.adapters.ws.schemas import Ack, ClientMessage, Error, MissionView, Snapshot
 from corridor.domain.events import (
     Event,
@@ -36,14 +39,15 @@ from corridor.domain.events import (
 from corridor.domain.geo import Position
 from corridor.domain.rf.coverage import (
     ContourLevel,
-    compute_js_heatmap_geojson,
+    compute_js_heatmap,
     compute_polar_coverage,
+    heatmap_png,
     polar_coverage_to_geojson,
     probe_point_rf,
 )
 from corridor.domain.rf.dem import DemProvider
 from corridor.domain.scenario import Scenario
-from corridor.domain.terrain import ground_model
+from corridor.domain.terrain import dem_path, ground_model
 from corridor.domain.zones import nominal_zones
 from corridor.engine.clock import SimClock
 from corridor.engine.engine import CommandRejected, Engine, MissionRuntime
@@ -229,6 +233,24 @@ def create_app(
         allow_headers=["*"],
     )
 
+    @app.get("/api/zones3d", responses={404: {"description": "Unknown mission."}})
+    def get_zones3d(mission_id: str) -> dict[str, Any]:
+        """3D only: the cells each jammer and radar forbids at each flight level for the
+        mission, as the planner sees them, as GeoJSON outlines; empty in 2D."""
+        runtime = engine.missions.get(mission_id)
+        if runtime is None:
+            raise HTTPException(404, "unknown mission")
+        return level_outlines(engine.scenario, runtime.mission, runtime.constraints.grid)
+
+    @app.get("/api/buildings")
+    def get_buildings() -> Response:
+        """Building footprints of the scenario with ``height_m``, for the map (GeoJSON); an
+        empty collection without buildings."""
+        terrain = engine.scenario.terrain
+        if terrain.buildings is None:
+            return JSONResponse({"type": "FeatureCollection", "features": []})
+        return FileResponse(dem_path(terrain.buildings), media_type="application/geo+json")
+
     @app.get("/api/rf/coverage")
     async def get_rf_coverage(drone_h_agl_m: float = 20.0) -> dict[str, Any]:
         """Return terrain-aware RF coverage GeoJSON contours for scenario threats."""
@@ -236,41 +258,66 @@ def create_app(
         features = _build_threat_coverage_features(dem, engine.scenario, drone_h_agl_m)
         return {"type": "FeatureCollection", "features": features}
 
+    heatmap_cache: dict[str, dict[str, Any]] = {}
+
     @app.get("/api/rf/heatmap")
     async def get_rf_heatmap(
         mission_id: str | None = None,
         drone_h_agl_m: float = 20.0,
-        step_m: float = 300.0,
-        cells: bool = False,
+        step_m: float = 50.0,
     ) -> dict[str, Any]:
-        """Return continuous J/S heatmap grid for GPU-accelerated heatmap rendering."""
-        dem = _select_dem(engine.scenario)
+        """J/S heatmap as a PNG data URL with the corners it drapes on (MapLibre image source).
+
+        Computed once per configuration: the jammers, the pilot link, the terrain and the box.
+        """
+        current = engine.scenario
         runtime = runtime_for(mission_id)
         m, grid = runtime.mission, runtime.constraints.grid
         jammers: list[tuple[str, Position, float]] = [
-            (j.id, j.pos, j.eirp_w) for j in scenario.friendly_jammers
+            (j.id, j.pos, j.eirp_w) for j in current.friendly_jammers
         ]
-        for t in scenario.enemy_threats:
+        for t in current.enemy_threats:
             if t.type == "jammer":
                 jammers.append((t.id, t.pos, t.eirp_w))
 
-        # Calculate bounding box with 5km margin around scenario grid
+        # Bounding box with 5 km margin around the mission grid
         frame = grid.frame
         sw = frame.to_position(-5000.0, -5000.0)
         ne = frame.to_position(grid.cols * grid.cell_m + 5000.0, grid.rows * grid.cell_m + 5000.0)
         bounds = (sw.lat, sw.lon, ne.lat, ne.lon)
+        step = max(step_m, 50.0)
 
-        return compute_js_heatmap_geojson(
-            dem=dem,
-            pilot_pos=m.launch,
-            pilot_eirp_w=m.link_eirp_w,
-            jammers=jammers,
-            band_or_freq_hz=m.band,
-            bounds=bounds,
-            step_m=max(step_m, 250.0),
-            drone_h_agl_m=drone_h_agl_m,
-            cells=cells,
+        key = repr(
+            (current.terrain, jammers, m.launch, m.link_eirp_w, m.band, bounds, step, drone_h_agl_m)
         )
+        cached = heatmap_cache.get(key)
+        if cached is not None:
+            return cached
+
+        def render() -> dict[str, Any]:
+            heatmap = compute_js_heatmap(
+                dem=_select_dem(current),
+                pilot_pos=m.launch,
+                pilot_eirp_w=m.link_eirp_w,
+                jammers=jammers,
+                band_or_freq_hz=m.band,
+                bounds=bounds,
+                step_m=step,
+                drone_h_agl_m=drone_h_agl_m,
+            )
+            png = base64.b64encode(heatmap_png(heatmap)).decode("ascii")
+            w, s, e, n = heatmap.west, heatmap.south, heatmap.east, heatmap.north
+            return {
+                "image": f"data:image/png;base64,{png}",
+                "coordinates": [[w, n], [e, n], [e, s], [w, s]],
+                "step_m": step,
+            }
+
+        result = await asyncio.to_thread(render)
+        if len(heatmap_cache) >= 16:
+            heatmap_cache.clear()
+        heatmap_cache[key] = result
+        return result
 
     @app.get("/api/rf/probe")
     async def probe_rf(

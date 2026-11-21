@@ -221,6 +221,10 @@ def test_3d_flight_on_a_confirmed_cut_needs_no_fallback(scenario: Scenario) -> N
     plan = world.m1.plan
     assert plan is not None and plan.status == "approved"
     assert {p.alt_m for p in plan.optimised_route} - {0.0} <= set(scenario.terrain.levels_m)
+    assert all(p.amsl_m is not None for p in plan.optimised_route)
+    assert plan.profile and all(
+        p.amsl_m is not None and p.amsl_m >= p.ground_m for p in plan.profile
+    )
     world.engine.submit(LaunchMission(actor=PILOT, mission="M1"))
     world.run_to(1800)
     assert world.engine.state.missions["M1"] == "arrived"

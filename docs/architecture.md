@@ -125,6 +125,13 @@ Two kinds of data, kept apart:
   - `low`, for terrain masking: lowest ground in the cell. A hill or building hiding the drone
     from an emitter is never taken higher than it is, so no shadow is assumed where there is
     none (jamming zones, pilot link, radars).
+- **Buildings** (`terrain.buildings`, optional, needs `dem`): OpenStreetMap footprints with
+  `height_m` (the `height` tag, else `building:levels` x 3 m, else 10 m), downloaded once per
+  demo area with `uv run python tools/fetch_buildings.py <name> S W N E` into
+  `backend/data/buildings_<name>.geojson`. Raised into the elevation: every pixel a footprint
+  touches becomes ground + height (ground: lowest elevation within 5 pixels of its centre, so a
+  roof on a slope may come out a little low). Planner, 3D zones, profile and RF endpoints all
+  see them. `GET /api/buildings` serves the file for the map (empty collection without).
   The Copernicus water body mask is not used (not in `backend/data/`); the rule above covers
   rivers narrower than about two cells. The RF endpoints (`/api/rf/*`) use the same file instead of guessing one
   from the latitude. `mode`: `2d` (default, one layer, free-space discs) or `3d` (the levels,
@@ -524,7 +531,12 @@ Route points carry `alt_m` (0 on the ground). Smoothing pulls lines within one l
 or descent stays as planned, like a hold. In flight, the safety rule checks the zones at the
 drone's level (both levels during a climb). On the Munich demo: detour 686 s with climbs to
 120 m (646 s in 2D), J3 cut 629 s; a plan takes about 1 to 2 s against 0.1 to 0.5 s in 2D,
-within the 3 s replan allowance. Not yet: the pilot's minimum signal, radars masked by terrain,
+within the 3 s replan allowance. Hong Kong (`scenarios/hongkong.json`, 3D with 31 395 OSM
+buildings): pilot on the Tsim Sha Tsui waterfront, target in Quarry Bay, friendly jammer (2 W)
+on the harbour crossing, enemy jammer (1 W) on Victoria Peak. Detour 432 s climbing to 250 m
+(up to 560 m above sea level over the towers), 308 s through the harbour cut: 29 % saved, where
+2D gives 7 %. A pilot standing among the towers (inland Tsim Sha Tsui) gets no route at all: the
+city shadows a 2 m antenna. Not yet: the pilot's minimum signal, radars masked by terrain,
 a vertical speed or battery cost of its own for climbing.
 
 **Search: SIPP (safe interval path planning)** (`domain/planner/astar.py`).
@@ -613,6 +625,14 @@ grid with a 2 m pilot antenna and 13 % with a 10 m mast, against the 2D disc (9 
 above: flying low costs the pilot link. About 0.2 to 0.7 s per mission, then cached (a cut
 recomputes nothing; a new threat only its own field). Enemy position margins and masks over
 time come with the 3D masks; `pilot_signal` is the input of the pilot minimum signal.
+
+**3D zones on the map** (`adapters/ws/outlines.py`, `GET /api/zones3d?mission_id=`). The cells
+the planner forbids at each level, per threat (`planner/layers.py:cells_by_threat`, the same
+widening and enemy margins as the masks), traced as polygons: GeoJSON features with `threat`,
+`kind`, `level` (index) and `level_m`. Empty in 2D. The front end fetches them again with each
+snapshot (a threat added or removed comes with one) and shows one level at a time; a friendly
+jammer's outline takes the colour of its cut state like the 2D disc. A radar is the same 2D
+shape at every level.
 
 **Forbidden cells.** Cuts are piecewise constant in time, so `masks.py` precomputes one mask per
 interval between cut boundaries with numpy, not one per time step. A cell is forbidden when it
@@ -730,10 +750,15 @@ Server to client:
 
 - A route point is the position at time `t`; `action` (`fly`, `hover`, `ground`) holds until
   the next point. Only points where the direction or the action changes are sent; the front
-  interpolates. `alt_m` is the height above the ground, `null` while the planner is 2D.
-- `profile`: under the optimised route, every 50 m of flight and at each point: `distance_m`
-  from take-off, `ground_m` (above sea level, 0 without an elevation file) and `alt_m`
-  (height above the ground, interpolated, `null` while unknown). For the altitude profile.
+  interpolates. In 3D, `alt_m` is the height above the clearance ground (the highest ground
+  within a cell around: what the drone must clear), 0 on the ground, and `amsl_m` the altitude
+  above sea level (clearance ground of the point's cell + `alt_m`). Both `null` in 2D.
+- A level is a height above the clearance ground, so between two route points the drone
+  follows that ground: its altitude is not a straight line between the points. `profile`
+  carries it: under the optimised route, every 50 m of flight and at each point, `distance_m`
+  from take-off, `lat`, `lon`, `ground_m` (ground surface above sea level, 0 without an
+  elevation file), `alt_m` and `amsl_m` (`null` in 2D). For the altitude profile and a 3D
+  view of the route (a line through the `profile` points at `amsl_m`).
 - `status`: `preview` (uses a cut not confirmed yet, not flyable), `approved` (confirmed cuts
   only), `fallback` (drone late, safe route from its position), `baseline` (no usable cut).
 - Battery figures are consumption in % of `battery_max_s`. `saved_pct` is relative to the

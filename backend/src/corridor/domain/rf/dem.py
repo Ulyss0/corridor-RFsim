@@ -104,6 +104,11 @@ class RasterDem:
         res = self.get_elevations([pos])
         return float(res[0])
 
+    def raise_to(self, surface: np.ndarray) -> None:
+        """Elevation becomes the higher of itself and ``surface`` (same shape as the raster),
+        e.g. building roofs."""
+        self._data = np.maximum(self._data, surface)
+
     def get_elevations(self, positions: Sequence[Position]) -> np.ndarray:
         if not positions:
             return np.empty(0, dtype=np.float64)

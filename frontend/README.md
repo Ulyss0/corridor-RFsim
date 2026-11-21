@@ -49,6 +49,10 @@ src/
 - Map: grids, zones (friendly red / cut green / pending orange, enemy purple, radar orange;
   `forbidden: outside` drawn as the grid with the ring as a hole), launch and target of every
   mission, threats.
+- 3D scenarios (`terrain.mode: "3d"`): a level selector in the map toolbar shows the selected
+  mission's zones at one flight level (`GET /api/zones3d`) in place of its 2D discs (zones to
+  avoid stay 2D); the selected route is coloured by flight level; the mission detail shows the
+  altitude profile (ground and drone above sea level, from `plan.profile`).
 - Commands: `clock.set` (start / pause / speed), `cut.schedule` (EW cut form: jammer, mission
   among those the jammer concerns, start, length; prefilled from the jammer or mission shown;
   closes when the cut is scheduled), `cut.confirm` (only enabled for the jammer's operator),

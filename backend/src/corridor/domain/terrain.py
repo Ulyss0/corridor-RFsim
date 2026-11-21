@@ -22,14 +22,24 @@ interpolation, so a one-pixel roof or river keeps its height), each safe for its
   the drone from a jammer or a radar is never taken higher than it is, so no shadow is assumed
   where there is none.
 
-``profile`` samples the ground and the drone height along a route, for the altitude profile
-under the route on the map.
+Buildings (``Terrain.buildings``, footprints with ``height_m``) are raised into the elevation
+file: each footprint, on every pixel it touches, becomes ground + height. The surface model
+already holds buildings, smoothed over 30 m pixels; towers come out at their real height. The
+ground under a building is the lowest elevation within ``GROUND_WINDOW_PX`` pixels of its
+centre, so on a slope a roof may come out a little low.
+
+``with_altitude`` gives each route point its altitude above sea level, and ``profile`` samples
+the route every ``PROFILE_STEP_M``: position, ground surface, height and altitude, for the
+altitude profile and a 3D view. A level is a height above the clearance ground (``high``), so
+between two route points the drone follows that ground at its level: the altitude of the route
+is in the profile, not a straight line between its points.
 """
 
 from __future__ import annotations
 
 import functools
 import itertools
+import json
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -37,7 +47,8 @@ from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
-from scipy.ndimage import maximum_filter
+from rasterio.features import rasterize
+from scipy.ndimage import maximum_filter, minimum_filter
 
 from corridor.domain.events import ProfilePoint, RoutePoint
 from corridor.domain.geo import EARTH_RADIUS_M, Grid, LocalFrame, Position
@@ -50,6 +61,8 @@ PROFILE_STEP_M = 50.0
 """Spacing of the profile samples along a route."""
 SAMPLE_M = 10.0
 """Spacing of the ground samples across a cell: a third of a Copernicus pixel or less."""
+GROUND_WINDOW_PX = 5
+"""Window, in elevation pixels, for the ground under a building (about 150 m)."""
 CLEARANCE_CELLS = 1
 """``high`` takes the highest ground this many cells around, for a horizontal margin."""
 
@@ -87,17 +100,57 @@ def dem_path(name: str) -> Path:
 def check_terrain(terrain: Terrain) -> None:
     """Raise ValueError if the elevation file is outside ``DATA_DIR`` or missing (at scenario
     load, not mid-run)."""
-    if terrain.dem is not None and not dem_path(terrain.dem).is_file():
-        raise ValueError(f"elevation file not found: {dem_path(terrain.dem)}")
+    for name in (terrain.dem, terrain.buildings):
+        if name is not None and not dem_path(name).is_file():
+            raise ValueError(f"elevation file not found: {dem_path(name)}")
 
 
 def ground_model(terrain: Terrain) -> DemProvider:
-    return FLAT if terrain.dem is None else _raster(dem_path(terrain.dem))
+    return FLAT if terrain.dem is None else _raster(*_paths(terrain))
+
+
+def _paths(terrain: Terrain) -> tuple[Path, Path | None]:
+    assert terrain.dem is not None
+    buildings = None if terrain.buildings is None else dem_path(terrain.buildings)
+    return dem_path(terrain.dem), buildings
 
 
 @functools.cache
-def _raster(path: Path) -> RasterDem:
-    return RasterDem(path)
+def _raster(path: Path, buildings: Path | None = None) -> RasterDem:
+    raster = RasterDem(path)
+    if buildings is not None:
+        raster.raise_to(_roofs(raster, buildings))
+    return raster
+
+
+def _roofs(raster: RasterDem, path: Path) -> npt.NDArray[np.float64]:
+    """Roof elevation on every pixel a building touches, -inf elsewhere."""
+    data = raster._data  # elevation before buildings
+    ground = minimum_filter(data, size=GROUND_WINDOW_PX, mode="nearest")
+    inverse = ~raster.transform
+    rows, cols = data.shape
+    shapes = []
+    for feature in json.loads(path.read_text(encoding="utf-8"))["features"]:
+        ring = feature["geometry"]["coordinates"][0]
+        lon = sum(p[0] for p in ring) / len(ring)
+        lat = sum(p[1] for p in ring) / len(ring)
+        col, row = (int(v) for v in inverse * (lon, lat))
+        if not (0 <= row < rows and 0 <= col < cols):
+            continue
+        roof = float(ground[row, col]) + float(feature["properties"]["height_m"])
+        shapes.append((feature["geometry"], roof))
+    if not shapes:
+        return np.full(data.shape, -np.inf)
+    shapes.sort(key=lambda s: s[1])  # the highest roof wins where buildings overlap
+    roofs: npt.NDArray[np.float64] = rasterize(
+        shapes,
+        out_shape=data.shape,
+        transform=raster.transform,
+        fill=-np.inf,
+        all_touched=True,
+        dtype="float64",
+    )
+    return roofs
 
 
 @dataclass(frozen=True)
@@ -114,12 +167,12 @@ class GroundCells:
 
 
 def ground_cells(terrain: Terrain, grid: Grid) -> GroundCells:
-    return _ground_cells(None if terrain.dem is None else dem_path(terrain.dem), grid)
+    return _ground_cells(None if terrain.dem is None else _paths(terrain), grid)
 
 
 @functools.lru_cache(maxsize=64)
-def _ground_cells(path: Path | None, grid: Grid) -> GroundCells:
-    dem = FLAT if path is None else _raster(path)
+def _ground_cells(paths: tuple[Path, Path | None] | None, grid: Grid) -> GroundCells:
+    dem = FLAT if paths is None else _raster(*paths)
     k = max(3, math.ceil(grid.cell_m / SAMPLE_M))
     inside = (np.arange(k) + 0.5) / k * grid.cell_m
     xs = (np.arange(grid.cols)[:, np.newaxis] * grid.cell_m + inside).ravel()
@@ -137,9 +190,30 @@ def _ground_cells(path: Path | None, grid: Grid) -> GroundCells:
     return GroundCells(centre=centre, high=high, low=low)
 
 
-def profile(terrain: Terrain, route: Sequence[RoutePoint]) -> list[ProfilePoint]:
-    """Ground and drone height every ``PROFILE_STEP_M`` along the flown part of ``route``, and
-    at each of its points. Ground waits and hovers add no distance."""
+def with_altitude(terrain: Terrain, grid: Grid, route: Sequence[RoutePoint]) -> list[RoutePoint]:
+    """``route`` with ``amsl_m`` on each point that has a height: the clearance ground of its
+    cell plus its height, the ground surface for a point on the ground. Unchanged in 2D."""
+    if all(p.alt_m is None for p in route):
+        return list(route)
+    ground = ground_cells(terrain, grid)
+    out = []
+    for p in route:
+        cell = grid.cell_of(Position(lat=p.lat, lon=p.lon))
+        if p.alt_m is None or cell is None:
+            out.append(p)
+            continue
+        base = ground.centre if p.alt_m == 0 else ground.high
+        amsl = round(float(base[cell[1], cell[0]]) + p.alt_m, 1)
+        out.append(p.model_copy(update={"amsl_m": amsl}))
+    return out
+
+
+def profile(
+    terrain: Terrain, route: Sequence[RoutePoint], grid: Grid | None = None
+) -> list[ProfilePoint]:
+    """The route every ``PROFILE_STEP_M`` along its flown part, and at each of its points.
+    Ground waits and hovers add no distance. With ``grid`` (the mission's), each sample with a
+    height gets its altitude above sea level: clearance ground of its cell plus height."""
     flown = [p for p in route if p.action != "ground"] or list(route[:1])
     if not flown:
         return []
@@ -159,9 +233,24 @@ def profile(terrain: Terrain, route: Sequence[RoutePoint]) -> list[ProfilePoint]
     last = flown[-1]
     samples.append((distance, Position(lat=last.lat, lon=last.lon), last.alt_m))
     ground = ground_model(terrain).get_elevations([p for _, p, _ in samples])
+    high = None if grid is None else ground_cells(terrain, grid).high
+
+    def amsl(at: Position, alt: float | None) -> float | None:
+        cell = None if grid is None else grid.cell_of(at)
+        if alt is None or high is None or cell is None:
+            return None
+        return round(float(high[cell[1], cell[0]]) + alt, 1)
+
     return [
-        ProfilePoint(distance_m=round(d, 1), ground_m=round(float(g), 1), alt_m=alt)
-        for (d, _, alt), g in zip(samples, ground, strict=True)
+        ProfilePoint(
+            distance_m=round(d, 1),
+            lat=at.lat,
+            lon=at.lon,
+            ground_m=round(float(g), 1),
+            alt_m=None if alt is None else round(alt, 1),
+            amsl_m=amsl(at, alt),
+        )
+        for (d, at, alt), g in zip(samples, ground, strict=True)
     ]
 
 

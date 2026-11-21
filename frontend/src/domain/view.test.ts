@@ -74,11 +74,11 @@ describe('domain/view', () => {
 
   describe('positionAt', () => {
     const route: RoutePoint[] = [
-      { lat: 48.0, lon: 11.0, t: 600, action: 'ground', alt_m: null },
-      { lat: 48.0, lon: 11.0, t: 700, action: 'fly', alt_m: null },
-      { lat: 48.1, lon: 11.0, t: 800, action: 'hover', alt_m: null },
-      { lat: 48.1, lon: 11.0, t: 900, action: 'fly', alt_m: null },
-      { lat: 48.1, lon: 11.1, t: 1000, action: 'hover', alt_m: null },
+      { lat: 48.0, lon: 11.0, t: 600, action: 'ground', alt_m: null, amsl_m: null },
+      { lat: 48.0, lon: 11.0, t: 700, action: 'fly', alt_m: null, amsl_m: null },
+      { lat: 48.1, lon: 11.0, t: 800, action: 'hover', alt_m: null, amsl_m: null },
+      { lat: 48.1, lon: 11.0, t: 900, action: 'fly', alt_m: null, amsl_m: null },
+      { lat: 48.1, lon: 11.1, t: 1000, action: 'hover', alt_m: null, amsl_m: null },
     ]
 
     it('returns ground action and launch position before takeoff', () => {
@@ -152,9 +152,9 @@ describe('domain/view', () => {
   describe('routePhases', () => {
     it('splits route into ground and flight phases', () => {
       const route: RoutePoint[] = [
-        { lat: 48.0, lon: 11.0, t: 600, action: 'ground', alt_m: null },
-        { lat: 48.0, lon: 11.0, t: 700, action: 'fly', alt_m: null },
-        { lat: 48.1, lon: 11.0, t: 800, action: 'hover', alt_m: null },
+        { lat: 48.0, lon: 11.0, t: 600, action: 'ground', alt_m: null, amsl_m: null },
+        { lat: 48.0, lon: 11.0, t: 700, action: 'fly', alt_m: null, amsl_m: null },
+        { lat: 48.1, lon: 11.0, t: 800, action: 'hover', alt_m: null, amsl_m: null },
       ]
       const phases = routePhases(route, [])
       expect(phases.length).toBeGreaterThan(0)
@@ -195,8 +195,8 @@ describe('missionSpan', () => {
 
   it('spans the planned route', () => {
     const route: RoutePoint[] = [
-      { lat: 48.0, lon: 11.0, alt_m: 0, t: 650, action: 'ground' },
-      { lat: 48.1, lon: 11.0, alt_m: 120, t: 1400, action: 'hover' },
+      { lat: 48.0, lon: 11.0, alt_m: 0, t: 650, action: 'ground', amsl_m: null },
+      { lat: 48.1, lon: 11.0, alt_m: 120, t: 1400, action: 'hover', amsl_m: null },
     ]
     expect(missionSpan(mission, route)).toEqual([650, 1400])
   })

@@ -180,6 +180,13 @@ class Terrain(Model):
         min_length=1,
         description="Flight levels, metres above the ground, lowest first.",
     )
+    buildings: str | None = Field(
+        default=None,
+        description=(
+            "Building footprints with height_m (GeoJSON from tools/fetch_buildings.py), a path"
+            " inside backend/data/; raised into the elevation. Needs dem."
+        ),
+    )
     mode: Literal["2d", "3d"] = Field(
         default="2d",
         description=(
@@ -187,6 +194,12 @@ class Terrain(Model):
             " terrain, climbs and descents."
         ),
     )
+
+    @model_validator(mode="after")
+    def _buildings_need_a_map(self) -> Self:
+        if self.buildings is not None and self.dem is None:
+            raise ValueError("buildings need an elevation file (dem)")
+        return self
 
     @model_validator(mode="after")
     def _levels_rise(self) -> Self:

@@ -62,7 +62,7 @@ from corridor.domain.events import (
     ThreatAdded,
     ThreatRemoved,
 )
-from corridor.domain.geo import LocalFrame
+from corridor.domain.geo import Grid, LocalFrame
 from corridor.domain.planner.layers import forbidden_cells
 from corridor.domain.planner.plan import MissionPlan
 from corridor.domain.safety import (
@@ -84,7 +84,7 @@ from corridor.domain.scenario import (
     Terrain,
 )
 from corridor.domain.state import Cut, WorldState
-from corridor.domain.terrain import profile
+from corridor.domain.terrain import profile, with_altitude
 from corridor.domain.zones import (
     MissionConstraints,
     ThreatShape,
@@ -234,7 +234,9 @@ class Engine:
                 text = f"{mission.id}: no route to the target within battery."
                 self._publish([Notification(to=mission.pilot_callsign, text=text)])
                 return
-            runtime.plan = _plan_updated(mission.id, revision, plan, self.scenario.terrain)
+            runtime.plan = _plan_updated(
+                mission.id, revision, plan, self.scenario.terrain, runtime.constraints.grid
+            )
             self._publish([runtime.plan])
 
         return done
@@ -352,9 +354,15 @@ class Engine:
                 self._publish([Notification(to=pilot, text=text)])
                 return
             now = self.clock.now()
-            runtime.plan = _plan_updated(runtime.mission.id, revision, plan, self.scenario.terrain)
+            runtime.plan = _plan_updated(
+                runtime.mission.id,
+                revision,
+                plan,
+                self.scenario.terrain,
+                runtime.constraints.grid,
+            )
             runtime.flight = Flight(
-                route=plan.optimised_route,
+                route=runtime.plan.optimised_route,  # as sent, with altitudes
                 revision=revision,
                 air_before_s=runtime.flight.airborne_s(now),
             )
@@ -676,14 +684,15 @@ class Engine:
 
 
 def _plan_updated(
-    mission_id: str, revision: int, plan: MissionPlan, terrain: Terrain
+    mission_id: str, revision: int, plan: MissionPlan, terrain: Terrain, grid: Grid
 ) -> PlanUpdated:
+    """The plan as sent: route points with their altitude above sea level, and the profile."""
     return PlanUpdated(
         mission=mission_id,
         revision=revision,
         status=plan.status,
         metrics=plan.metrics,
-        baseline_route=plan.baseline_route,
-        optimised_route=plan.optimised_route,
-        profile=profile(terrain, plan.optimised_route),
+        baseline_route=with_altitude(terrain, grid, plan.baseline_route),
+        optimised_route=with_altitude(terrain, grid, plan.optimised_route),
+        profile=profile(terrain, plan.optimised_route, grid),
     )

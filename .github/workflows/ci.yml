@@ -1,0 +1,103 @@
+# Checks every pull request and every push to main: the same commands as in CLAUDE.md
+# ("Repo conventions") and frontend/README.md.
+#
+# Supply chain:
+# - actions pinned to a full commit SHA (a tag can be moved), the tag in the comment;
+#   Dependabot (.github/dependabot.yml) bumps them;
+# - no npm lifecycle scripts at install (`npm ci --ignore-scripts`);
+# - uv installs from the lockfile only (`--locked`). SonarCloud also asks for `--no-build`
+#   and locked `uv run`: accepted there, since every dependency in uv.lock ships wheels (the
+#   only build is the corridor package itself) and `uv run` follows a `uv sync --locked`.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push to the same branch cancels the run still going.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Three jobs in parallel: the backend tests are the long part, so linting and type-checking
+# run beside them. The frontend checks take seconds and stay in one job.
+jobs:
+  backend-lint:
+    name: Backend (ruff, mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10  # a hung test fails fast instead of running for hours
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.10.9"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install
+        run: uv sync --locked
+      - name: Lint
+        run: uv run ruff check src tests
+      - name: Format
+        run: uv run ruff format --check src tests
+      - name: Type-check
+        run: uv run mypy
+
+  backend-test:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10  # a hung test fails fast instead of running for hours
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.10.9"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install
+        run: uv sync --locked
+      # Includes test_schema: the committed schema/ws.schema.json must match the models.
+      # One worker per core; worksteal lets idle workers take queued tests, so the two long
+      # flight tests (about 20 s each) do not wait behind each other.
+      - name: Test
+        run: uv run pytest -n auto --dist worksteal
+
+  frontend:
+    name: Frontend (oxlint, tsc, vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10  # a hung test fails fast instead of running for hours
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        run: npm ci --ignore-scripts
+      # src/api/ws.gen.ts must be generated from the committed schema.
+      - name: Generated types up to date
+        run: |
+          npm run gen:types
+          git diff --exit-code src/api/ws.gen.ts || {
+            echo "::error::src/api/ws.gen.ts is stale: run 'npm run gen:types' in frontend/"
+            exit 1
+          }
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm test
+      - name: Build (type-check included)
+        run: npm run build
