@@ -4,7 +4,9 @@ import socket
 import socketserver
 import threading
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from xml.etree.ElementTree import fromstring
 
 import pytest
@@ -20,6 +22,7 @@ from corridor.domain.state import Cut
 from corridor.domain.zones import mission_constraints, mission_shapes
 from corridor.engine.replan import PlanDone
 from corridor.export.atak import TakTarget, chat_cot, delete_cot, route_cot, sender_identity
+from corridor.export.cli import write_files
 from corridor.export.firmware import ardupilot_waypoints, inav_mission
 from corridor.export.route import (
     LATEST_HORIZON_S,
@@ -108,8 +111,9 @@ def test_route_through_a_cut_has_a_latest_takeoff(scenario: Scenario) -> None:
 
 
 def test_route_needs_a_takeoff_and_a_waypoint(scenario: Scenario) -> None:
+    mission, takeoff_only = m1(scenario), _points(scenario)[:1]
     with pytest.raises(ValueError):
-        flight_route(scenario, m1(scenario), _points(scenario)[:1])
+        flight_route(scenario, mission, takeoff_only)
 
 
 def test_inav_mission(route: FlightRoute) -> None:
@@ -212,6 +216,22 @@ def test_atak_chat_and_delete(route: FlightRoute) -> None:
     link = gone.find("detail/link")
     assert link is not None
     assert link.get("uid") == "corridor-route-M1"
+
+
+def test_files_stay_inside_the_output_folder(tmp_path: Path, route: FlightRoute) -> None:
+    written = write_files(route, Path("out"), base=tmp_path)
+    assert {p.name for p in written} == {
+        "M1.mission",
+        "M1.waypoints",
+        "M1-atak-route.xml",
+        "M1-briefing.txt",
+    }
+    assert all(p.parent == tmp_path / "out" for p in written)
+    with pytest.raises(ValueError, match="outside"):
+        write_files(route, Path("../escape"), base=tmp_path)
+    sneaky = replace(route, mission_id="../../M1")
+    with pytest.raises(ValueError, match="outside"):
+        write_files(sneaky, Path("out"), base=tmp_path)
 
 
 # --- HTTP ---------------------------------------------------------------------------

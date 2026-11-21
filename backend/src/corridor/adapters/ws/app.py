@@ -61,6 +61,15 @@ log = logging.getLogger(__name__)
 Altitude = Annotated[float, Query(gt=0, le=1000, description="Metres above launch.")]
 MissionId = Annotated[str, Query(description="Mission whose current plan is exported.")]
 FileFormat = Literal["inav", "ardupilot", "briefing"]
+EXPORT_ERRORS: dict[int | str, dict[str, Any]] = {
+    404: {"description": "Unknown mission."},
+    409: {"description": "No plan yet, or the plan relies on unconfirmed cuts."},
+}
+ATAK_ERRORS: dict[int | str, dict[str, Any]] = {
+    **EXPORT_ERRORS,
+    502: {"description": "OpenTAKServer unreachable."},
+    503: {"description": "No OpenTAKServer configured (--tak-host)."},
+}
 
 
 class AtakSent(Model):
@@ -391,13 +400,13 @@ def create_app(
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await sender
 
-    @app.get("/api/export/{fmt}")
+    @app.get("/api/export/{fmt}", responses=EXPORT_ERRORS)
     def get_export(
         fmt: FileFormat, mission_id: MissionId, altitude_m: Altitude = DEFAULT_ALTITUDE_M
     ) -> Response:
         return export_file(export_route(engine, mission_id, altitude_m), fmt)
 
-    @app.post("/api/export/atak")
+    @app.post("/api/export/atak", responses=ATAK_ERRORS)
     async def post_atak(
         mission_id: MissionId, altitude_m: Altitude = DEFAULT_ALTITUDE_M
     ) -> AtakSent:

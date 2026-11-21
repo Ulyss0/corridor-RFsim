@@ -146,35 +146,8 @@ def flight_route(
     first = next((i for i, p in enumerate(points) if p.action != "ground"), None)
     if first is None or first == len(points) - 1:
         raise ValueError("a route needs a take-off point and at least one more point")
-    frame = LocalFrame(mission.launch)
     start = points[first]
-
-    waypoints: list[Waypoint] = []
-    previous = frame.to_xy(Position(lat=start.lat, lon=start.lon))
-    i = first + 1
-    while i < len(points):
-        here = points[i]
-        xy = frame.to_xy(Position(lat=here.lat, lon=here.lon))
-        hover_end = i + 1 < len(points) and here.action == "hover"
-        depart = points[i + 1].t if hover_end else here.t
-        i += 2 if hover_end else 1
-        last = i >= len(points)
-        kind: WaypointKind = "target" if last else "hold" if depart > here.t else "waypoint"
-        if kind == "waypoint" and math.dist(previous, xy) < MERGE_M:
-            continue
-        waypoints.append(
-            Waypoint(
-                number=len(waypoints) + 1,
-                lat=here.lat,
-                lon=here.lon,
-                alt_m=altitude_m,
-                arrive_s=here.t,
-                depart_s=depart,
-                kind=kind,
-            )
-        )
-        previous = xy
-
+    waypoints = _waypoints(LocalFrame(mission.launch), points, first, altitude_m)
     return FlightRoute(
         mission_id=mission.id,
         drone_id=mission.drone_id,
@@ -192,6 +165,46 @@ def flight_route(
         revision=revision,
         battery_used_pct=battery_used_pct,
     )
+
+
+def _waypoints(
+    frame: LocalFrame, points: list[RoutePoint], first: int, altitude_m: float
+) -> list[Waypoint]:
+    """Waypoints after the take-off point ``points[first]``, each hover pair merged."""
+    waypoints: list[Waypoint] = []
+    start = points[first]
+    previous = frame.to_xy(Position(lat=start.lat, lon=start.lon))
+    i = first + 1
+    while i < len(points):
+        here = points[i]
+        xy = frame.to_xy(Position(lat=here.lat, lon=here.lon))
+        hover_end = i + 1 < len(points) and here.action == "hover"
+        depart = points[i + 1].t if hover_end else here.t
+        i += 2 if hover_end else 1
+        kind = _kind(last=i >= len(points), holds=depart > here.t)
+        if kind == "waypoint" and math.dist(previous, xy) < MERGE_M:
+            continue
+        waypoints.append(
+            Waypoint(
+                number=len(waypoints) + 1,
+                lat=here.lat,
+                lon=here.lon,
+                alt_m=altitude_m,
+                arrive_s=here.t,
+                depart_s=depart,
+                kind=kind,
+            )
+        )
+        previous = xy
+    return waypoints
+
+
+def _kind(*, last: bool, holds: bool) -> WaypointKind:
+    if last:
+        return "target"
+    if holds:
+        return "hold"
+    return "waypoint"
 
 
 def briefing(route: FlightRoute) -> list[str]:

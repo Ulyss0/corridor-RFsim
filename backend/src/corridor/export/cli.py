@@ -6,7 +6,8 @@ corridor-export --revoke 10.0.0.5                   remove the route from the pi
 corridor-export --mission M2                        another mission than the first one
 
 Cuts given with ``--cut`` count as confirmed. The running server exports its own current
-plan over HTTP instead (``/api/export/...``).
+plan over HTTP instead (``/api/export/...``). ``--out`` must stay inside the working
+directory, and each file inside ``--out``: nothing is written anywhere else.
 """
 
 from __future__ import annotations
@@ -38,8 +39,20 @@ def _target(text: str, callsign: str) -> TakTarget:
     return TakTarget(host, int(port) if port else 8088, callsign)
 
 
-def write_files(route: FlightRoute, out: Path) -> list[Path]:
-    out.mkdir(parents=True, exist_ok=True)
+def contained(path: Path, root: Path) -> Path:
+    """``path`` resolved against ``root``; ValueError if it leaves ``root``."""
+    root = root.resolve()
+    resolved = (root / path).resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"{path} is outside {root}")
+    return resolved
+
+
+def write_files(route: FlightRoute, out: Path, base: Path | None = None) -> list[Path]:
+    """Write every export of ``route`` into ``out``, which must stay inside ``base`` (default:
+    the working directory)."""
+    folder = contained(out, base or Path.cwd())
+    folder.mkdir(parents=True, exist_ok=True)
     stem = route.mission_id
     files = {
         f"{stem}.mission": inav_mission(route),
@@ -49,7 +62,7 @@ def write_files(route: FlightRoute, out: Path) -> list[Path]:
     }
     written = []
     for name, content in files.items():
-        path = out / name
+        path = contained(Path(name), folder)
         path.write_text(content, encoding="utf-8")
         written.append(path)
     return written
@@ -103,7 +116,11 @@ def main() -> None:
         asyncio.run(revoke(_target(args.revoke, args.callsign), route))
         print(f"route deleted on {route.pilot_callsign}'s ATAK")
         return
-    for path in write_files(route, args.out):
+    try:
+        written = write_files(route, args.out)
+    except ValueError as exc:
+        raise SystemExit(f"not written: {exc}") from None
+    for path in written:
         print(f"wrote {path}")
     if args.send:
         target = _target(args.send, args.callsign)
