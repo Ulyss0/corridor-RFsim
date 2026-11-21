@@ -4,9 +4,15 @@ A flight follows a timed route ``delay_s`` behind its schedule (late launch, or 
 ``inject.delay``). While held, the drone stays where it is; held time in the air counts on the
 battery.
 
-Safety rule: the rest of the route, shifted by the delay, may only be in a friendly jammer zone
-inside a confirmed cut, with the planner's margins. When that no longer holds (drone late, cut
-cancelled), the engine asks for a fallback route from the drone position, using no cut.
+Safety rules, on the rest of the route shifted by the delay:
+
+- ``schedule_violation``: it may only be in a friendly jammer zone inside a confirmed cut, with
+  the planner's margins (broken when the drone is late or a cut is cancelled);
+- ``route_threat``: it may not enter an enemy jammer or radar zone, nor in 3D a cell out of the
+  pilot's reach (broken when the command adds a threat while the drone flies).
+
+When either no longer holds, the engine asks for a fallback route from the drone position,
+using no cut.
 
 In 3D (``LevelCells``) the zones are the planner's cells at the drone's flight level; during a
 climb or a descent, both levels count.
@@ -16,7 +22,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import numpy.typing as npt
@@ -103,22 +109,21 @@ def takeoff_s(route: Sequence[RoutePoint]) -> float:
 
 @dataclass(frozen=True)
 class LevelCells:
-    """3D: the cells each friendly jammer forbids at each flight level, on the mission grid
-    (``corridor.domain.planner.layers.forbidden_cells``)."""
+    """3D: the cells each friendly jammer forbids at each flight level, on the mission grid,
+    and those forbidden whatever the cuts, by threat (``corridor.domain.planner.layers``)."""
 
     grid: Grid
     altitudes: tuple[float, ...]
     by_jammer: dict[str, npt.NDArray[np.bool_]]
     """``[level, row, col]``."""
+    blocked: dict[str, npt.NDArray[np.bool_]] = field(default_factory=dict)
+    """Enemy jammers, radars and ``LINK`` (out of the pilot's reach), ``[level, row, col]``."""
 
     def jammers(self, position: Position, levels: set[int]) -> list[str]:
-        cell = self.grid.cell_of(position)
-        if cell is None or not levels:
-            return []
-        col, row = cell
-        return [
-            j for j, cells in self.by_jammer.items() if any(cells[lv, row, col] for lv in levels)
-        ]
+        return _inside(self.grid, self.by_jammer, position, levels)
+
+    def threats(self, position: Position, levels: set[int]) -> list[str]:
+        return _inside(self.grid, self.blocked, position, levels)
 
     def levels_at(self, route: Sequence[RoutePoint], t: float) -> set[int]:
         """Levels of the route points around ``t``: one in level flight, two in a climb."""
@@ -166,6 +171,41 @@ def schedule_violation(
                     return jammer
         t += CHECK_STEP_S
     return None
+
+
+def route_threat(
+    flight: Flight,
+    now: float,
+    frame: LocalFrame,
+    zones: Sequence[ThreatShape],
+    cells: LevelCells | None = None,
+) -> str | None:
+    """Enemy jammer or radar whose zone the rest of the route would enter; in 3D (``cells``)
+    also ``LINK`` where the pilot's signal is too weak at the drone's level."""
+    enemies = [z for z in zones if z.kind in ("enemy_jammer", "radar")]
+    t, end = flight.route_time(now), flight.route[-1].t
+    while t <= end:
+        position, action = position_at(flight.route, t)
+        if action != "ground":
+            if cells is not None:
+                inside = cells.threats(position, cells.levels_at(flight.route, t))
+            else:
+                x, y = frame.to_xy(position)
+                inside = [z.threat for z in enemies if z.contains(x, y)]
+            if inside:
+                return inside[0]
+        t += CHECK_STEP_S
+    return None
+
+
+def _inside(
+    grid: Grid, by_threat: dict[str, npt.NDArray[np.bool_]], position: Position, levels: set[int]
+) -> list[str]:
+    cell = grid.cell_of(position)
+    if cell is None or not levels:
+        return []
+    col, row = cell
+    return [t for t, cells in by_threat.items() if any(cells[lv, row, col] for lv in levels)]
 
 
 def cut_transitions(cuts: Sequence[Cut], after: float, until: float) -> list[tuple[Cut, str]]:

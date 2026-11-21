@@ -3,6 +3,7 @@
 import pytest
 
 from corridor.domain.commands import (
+    AddThreat,
     CancelCut,
     ConfirmCut,
     InjectDelay,
@@ -18,9 +19,11 @@ from corridor.domain.events import (
     MissionStatusChanged,
     Notification,
     PlanUpdated,
+    ThreatAdded,
 )
-from corridor.domain.geo import Grid, Position
+from corridor.domain.geo import Grid, LocalFrame, Position
 from corridor.domain.planner.plan import plan_fallback, plan_mission
+from corridor.domain.safety import position_at
 from corridor.domain.scenario import Mission, Scenario
 from corridor.domain.state import Cut
 from corridor.engine.clock import SimClock
@@ -244,4 +247,78 @@ def test_3d_late_drone_falls_back_from_its_level(scenario: Scenario) -> None:
     fallback = next(p for p in world.of(PlanUpdated) if p.status == "fallback")
     flight = world.m1.flight
     assert flight is not None and flight.route == fallback.optimised_route
+    assert fallback.optimised_route[0].alt_m in scenario.terrain.levels_m
+
+
+# --- threat added in flight -----------------------------------------------------------------
+
+
+def launched(scenario: Scenario) -> tuple[World, float]:
+    """M1 flying on a confirmed J3 cut, 30 s after take-off."""
+    world = World(scenario)
+    world.cut()
+    world.engine.submit(LaunchMission(actor=PILOT, mission="M1"))
+    plan = world.m1.plan
+    assert plan is not None
+    takeoff = next(p.t for p in plan.optimised_route if p.action != "ground")
+    world.run_to(takeoff + 30)
+    return world, takeoff
+
+
+def add_radar(world: World, pos: Position, radius_m: float = 400) -> str:
+    command = world.engine.scenario.command_callsign
+    events = world.engine.submit(AddThreat(actor=command, kind="radar", pos=pos, radius_m=radius_m))
+    return next(e.threat.id for e in events if isinstance(e, ThreatAdded))
+
+
+def test_a_radar_added_on_the_route_in_flight_falls_back(scenario: Scenario) -> None:
+    world, takeoff = launched(scenario)
+    route = world.m1.plan.optimised_route  # type: ignore[union-attr]
+    ahead = position_at(route, takeoff + 200)[0]
+    radar = add_radar(world, ahead)
+    world.run_to(takeoff + 40)
+    fallback = [p for p in world.of(PlanUpdated) if p.status == "fallback"]
+    assert len(fallback) == 1
+    texts = [n.text for n in world.of(Notification) if n.to == PILOT]
+    assert any(t.startswith(f"New threat {radar} on the route") for t in texts)
+    frame = LocalFrame(world.m1.mission.launch)
+    zone = next(z for z in world.m1.shapes if z.threat == radar)
+    new = fallback[0].optimised_route
+    for i in range(201):
+        t = new[0].t + (new[-1].t - new[0].t) * i / 200
+        assert not zone.contains(*frame.to_xy(position_at(new, t)[0]))
+    world.run_to(4000)
+    assert world.engine.state.missions["M1"] == "arrived"
+
+
+def test_a_radar_added_over_the_drone_is_left_by_the_nearest_way(scenario: Scenario) -> None:
+    world, takeoff = launched(scenario)
+    here = position_at(world.m1.flight.route, takeoff + 30)[0]  # type: ignore[union-attr]
+    radar = add_radar(world, here, radius_m=300)
+    world.run_to(takeoff + 35)
+    fallback = next(p for p in world.of(PlanUpdated) if p.status == "fallback")
+    route = fallback.optimised_route
+    frame = LocalFrame(world.m1.mission.launch)
+    zone = next(z for z in world.m1.shapes if z.threat == radar)
+    assert zone.contains(*frame.to_xy(Position(lat=route[0].lat, lon=route[0].lon)))
+    # Out of the zone after the first leg, and it stays out.
+    assert not zone.contains(*frame.to_xy(Position(lat=route[1].lat, lon=route[1].lon)))
+    assert route[1].t - route[0].t < 600 / world.m1.mission.cruise_speed_mps
+
+
+def test_a_threat_away_from_the_route_changes_nothing_in_flight(scenario: Scenario) -> None:
+    world, takeoff = launched(scenario)
+    target = world.m1.mission.target
+    far = Position(lat=target.lat + 0.08, lon=target.lon)  # about 9 km north of the target
+    add_radar(world, far, radius_m=300)
+    world.run_to(takeoff + 60)
+    assert not any(p.status == "fallback" for p in world.of(PlanUpdated))
+
+
+def test_3d_a_radar_added_on_the_route_falls_back(scenario: Scenario) -> None:
+    world, takeoff = launched(three_d(scenario))
+    route = world.m1.plan.optimised_route  # type: ignore[union-attr]
+    add_radar(world, position_at(route, takeoff + 200)[0])
+    world.run_to(takeoff + 40)
+    fallback = next(p for p in world.of(PlanUpdated) if p.status == "fallback")
     assert fallback.optimised_route[0].alt_m in scenario.terrain.levels_m

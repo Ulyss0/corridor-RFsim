@@ -16,11 +16,8 @@ from rasterio.features import shapes
 from rasterio.transform import Affine
 
 from corridor.domain.geo import EARTH_RADIUS_M, Grid
-from corridor.domain.planner.layers import cells_by_threat, link_cells
+from corridor.domain.planner.layers import LINK, cells_by_threat, link_cells
 from corridor.domain.scenario import Mission, Scenario
-
-LINK = "LINK"
-"""Threat id of the cells out of the pilot's reach (kind ``link``)."""
 
 
 def level_outlines(scenario: Scenario, mission: Mission, grid: Grid) -> dict[str, Any]:
