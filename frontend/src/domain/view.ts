@@ -135,6 +135,29 @@ export function missionOf(scenario: Scenario, id: string): Mission | undefined {
   return scenario.missions.find((m) => m.id === id)
 }
 
+/** Points to frame on the map for an item clicked in the sidebar: a mission's launch, target and
+ * planned route; an object's position. Empty when the item is not in the scenario. */
+export function focusPoints(
+  scenario: Scenario,
+  kind: 'mission' | 'jammer' | 'threat',
+  id: string,
+  route: RoutePoint[] = [],
+): Position[] {
+  if (kind === 'jammer') return scenario.friendly_jammers.filter((j) => j.id === id).map((j) => j.pos)
+  if (kind === 'threat') return scenario.enemy_threats.filter((t) => t.id === id).map((t) => t.pos)
+  const m = missionOf(scenario, id)
+  if (!m) return []
+  return [m.launch, m.target, ...route.map((p) => ({ lat: p.lat, lon: p.lon }))]
+}
+
+/** A mission's time span in sim seconds: its planned route, else departure plus full battery. */
+export function missionSpan(mission: Mission, route: RoutePoint[] = []): [number, number] {
+  const first = route.at(0)
+  const last = route.at(-1)
+  if (first && last && last.t > first.t) return [first.t, last.t]
+  return [mission.departure_s, mission.departure_s + mission.battery_max_s]
+}
+
 /** Smallest box around several grids, as two [lon, lat] corners (south-west, north-east). */
 export function boundsOf(grids: Grid[]): [[number, number], [number, number]] | null {
   const corners = grids.flatMap(gridBounds)

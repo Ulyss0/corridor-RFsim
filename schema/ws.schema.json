@@ -36,6 +36,94 @@
       "title": "Ack",
       "type": "object"
     },
+    "AddThreat": {
+      "additionalProperties": false,
+      "description": "The command reports an enemy threat or a zone to avoid; the server gives it an id.\n\nA radar and a zone to avoid take ``radius_m``, an enemy jammer ``eirp_w`` and ``bands``.",
+      "properties": {
+        "type": {
+          "const": "threat.add",
+          "default": "threat.add",
+          "title": "Type",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "radar",
+            "jammer",
+            "avoid"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "pos": {
+          "$ref": "#/$defs/Position"
+        },
+        "radius_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Radar range or radius of the zone to avoid, metres.",
+          "title": "Radius M"
+        },
+        "eirp_w": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Jammer EIRP, watts.",
+          "title": "Eirp W"
+        },
+        "bands": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Jammer bands.",
+          "title": "Bands"
+        },
+        "position_error_m": {
+          "default": 0,
+          "description": "Uncertainty on `pos`, metres (radar and jammer).",
+          "minimum": 0,
+          "title": "Position Error M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "actor",
+        "kind",
+        "pos"
+      ],
+      "title": "AddThreat",
+      "type": "object"
+    },
     "Antenna": {
       "additionalProperties": false,
       "description": "Directional antenna, seen from above: a main beam with a hard edge, sidelobes elsewhere.\n\nThe cone is horizontal only: the planner is 2D plus time.",
@@ -67,6 +155,38 @@
         "sidelobe_db"
       ],
       "title": "Antenna",
+      "type": "object"
+    },
+    "AvoidZone": {
+      "additionalProperties": false,
+      "description": "Area the command advises against (reported activity, no located emitter).\n\nShown with the threats and in each mission's zones, but not forbidden: the planner may cross\nit. Making routes avoid it when there is a reasonable alternative is still to do.",
+      "properties": {
+        "type": {
+          "const": "avoid",
+          "default": "avoid",
+          "title": "Type",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "pos": {
+          "$ref": "#/$defs/Position"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0,
+          "title": "Radius M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "pos",
+        "radius_m"
+      ],
+      "title": "AvoidZone",
       "type": "object"
     },
     "CancelCut": {
@@ -125,7 +245,9 @@
               "inject.delay": "#/$defs/InjectDelay",
               "mission.launch": "#/$defs/LaunchMission",
               "mission.request": "#/$defs/RequestMission",
-              "mission.update": "#/$defs/UpdateMission"
+              "mission.update": "#/$defs/UpdateMission",
+              "threat.add": "#/$defs/AddThreat",
+              "threat.remove": "#/$defs/RemoveThreat"
             },
             "propertyName": "type"
           },
@@ -153,6 +275,12 @@
             },
             {
               "$ref": "#/$defs/InjectDelay"
+            },
+            {
+              "$ref": "#/$defs/AddThreat"
+            },
+            {
+              "$ref": "#/$defs/RemoveThreat"
             }
           ],
           "title": "Command"
@@ -1142,6 +1270,14 @@
           },
           "title": "Optimised Route",
           "type": "array"
+        },
+        "profile": {
+          "description": "Ground and drone height under the optimised route.",
+          "items": {
+            "$ref": "#/$defs/ProfilePoint"
+          },
+          "title": "Profile",
+          "type": "array"
         }
       },
       "required": [
@@ -1151,7 +1287,8 @@
         "status",
         "metrics",
         "baseline_route",
-        "optimised_route"
+        "optimised_route",
+        "profile"
       ],
       "title": "PlanUpdated",
       "type": "object"
@@ -1199,6 +1336,41 @@
       "title": "Position",
       "type": "object"
     },
+    "ProfilePoint": {
+      "additionalProperties": false,
+      "description": "A sample of the altitude profile under a route.",
+      "properties": {
+        "distance_m": {
+          "description": "Along the route from take-off.",
+          "title": "Distance M",
+          "type": "number"
+        },
+        "ground_m": {
+          "description": "Ground elevation above sea level; 0 without a map.",
+          "title": "Ground M",
+          "type": "number"
+        },
+        "alt_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Drone height above the ground, None if unknown.",
+          "title": "Alt M"
+        }
+      },
+      "required": [
+        "distance_m",
+        "ground_m",
+        "alt_m"
+      ],
+      "title": "ProfilePoint",
+      "type": "object"
+    },
     "ReferenceLink": {
       "additionalProperties": false,
       "description": "Control link assumed for the nominal footprint of a jammer, seen without any mission.",
@@ -1221,6 +1393,33 @@
         "range_m"
       ],
       "title": "ReferenceLink",
+      "type": "object"
+    },
+    "RemoveThreat": {
+      "additionalProperties": false,
+      "description": "The command removes an enemy threat or a zone to avoid, from the file or added.",
+      "properties": {
+        "type": {
+          "const": "threat.remove",
+          "default": "threat.remove",
+          "title": "Type",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "threat": {
+          "title": "Threat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "actor",
+        "threat"
+      ],
+      "title": "RemoveThreat",
       "type": "object"
     },
     "RequestMission": {
@@ -1285,13 +1484,27 @@
           ],
           "title": "Action",
           "type": "string"
+        },
+        "alt_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Height above the ground, metres; None while the planner is 2D.",
+          "title": "Alt M"
         }
       },
       "required": [
         "lat",
         "lon",
         "t",
-        "action"
+        "action",
+        "alt_m"
       ],
       "title": "RoutePoint",
       "type": "object"
@@ -1329,6 +1542,7 @@
           "items": {
             "discriminator": {
               "mapping": {
+                "avoid": "#/$defs/AvoidZone",
                 "jammer": "#/$defs/EnemyJammer",
                 "radar": "#/$defs/EnemyRadar"
               },
@@ -1340,11 +1554,17 @@
               },
               {
                 "$ref": "#/$defs/EnemyJammer"
+              },
+              {
+                "$ref": "#/$defs/AvoidZone"
               }
             ]
           },
           "title": "Enemy Threats",
           "type": "array"
+        },
+        "terrain": {
+          "$ref": "#/$defs/Terrain"
         },
         "pilots": {
           "items": {
@@ -1370,6 +1590,7 @@
         "command_callsign",
         "friendly_jammers",
         "enemy_threats",
+        "terrain",
         "pilots",
         "missions"
       ],
@@ -1452,7 +1673,9 @@
                   "mission.status": "#/$defs/MissionStatusChanged",
                   "mission.updated": "#/$defs/MissionUpdated",
                   "notification": "#/$defs/Notification",
-                  "plan.updated": "#/$defs/PlanUpdated"
+                  "plan.updated": "#/$defs/PlanUpdated",
+                  "threat.added": "#/$defs/ThreatAdded",
+                  "threat.removed": "#/$defs/ThreatRemoved"
                 },
                 "propertyName": "type"
               },
@@ -1474,6 +1697,12 @@
                 },
                 {
                   "$ref": "#/$defs/MissionUpdated"
+                },
+                {
+                  "$ref": "#/$defs/ThreatAdded"
+                },
+                {
+                  "$ref": "#/$defs/ThreatRemoved"
                 },
                 {
                   "$ref": "#/$defs/MissionStatusChanged"
@@ -1627,6 +1856,137 @@
       "title": "Snapshot",
       "type": "object"
     },
+    "Terrain": {
+      "additionalProperties": false,
+      "description": "Ground under the area and flight levels above it (``corridor.domain.terrain``).",
+      "properties": {
+        "dem": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Elevation file (GeoTIFF, metres above sea level), a path inside backend/data/. None: flat ground.",
+          "title": "Dem"
+        },
+        "levels_m": {
+          "default": [
+            30.0,
+            60.0,
+            120.0,
+            250.0
+          ],
+          "description": "Flight levels, metres above the ground, lowest first.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 1,
+          "title": "Levels M",
+          "type": "array"
+        },
+        "mode": {
+          "default": "2d",
+          "description": "2d: one layer, free-space zones (discs). 3d: the flight levels, zones through the terrain, climbs and descents.",
+          "enum": [
+            "2d",
+            "3d"
+          ],
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dem",
+        "levels_m",
+        "mode"
+      ],
+      "title": "Terrain",
+      "type": "object"
+    },
+    "ThreatAdded": {
+      "additionalProperties": false,
+      "description": "The command added an enemy threat or a zone to avoid. Clients that see it get a new\nsnapshot right after: zones, grids and scopes may all have changed.",
+      "properties": {
+        "type": {
+          "const": "threat.added",
+          "default": "threat.added",
+          "title": "Type",
+          "type": "string"
+        },
+        "threat": {
+          "discriminator": {
+            "mapping": {
+              "avoid": "#/$defs/AvoidZone",
+              "jammer": "#/$defs/EnemyJammer",
+              "radar": "#/$defs/EnemyRadar"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/EnemyRadar"
+            },
+            {
+              "$ref": "#/$defs/EnemyJammer"
+            },
+            {
+              "$ref": "#/$defs/AvoidZone"
+            }
+          ],
+          "title": "Threat"
+        },
+        "missions": {
+          "description": "Missions it concerns.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Missions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "threat",
+        "missions"
+      ],
+      "title": "ThreatAdded",
+      "type": "object"
+    },
+    "ThreatRemoved": {
+      "additionalProperties": false,
+      "description": "The command removed a threat. Clients that see it get a new snapshot right after.",
+      "properties": {
+        "type": {
+          "const": "threat.removed",
+          "default": "threat.removed",
+          "title": "Type",
+          "type": "string"
+        },
+        "threat": {
+          "title": "Threat",
+          "type": "string"
+        },
+        "missions": {
+          "description": "Missions it concerned.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Missions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "threat",
+        "missions"
+      ],
+      "title": "ThreatRemoved",
+      "type": "object"
+    },
     "UpdateMission": {
       "additionalProperties": false,
       "description": "Move the launch or target of a mission still on the ground, or change its departure.\n\nSame rights as launch: its pilot or the command post.",
@@ -1706,7 +2066,8 @@
           "enum": [
             "friendly_jammer",
             "enemy_jammer",
-            "radar"
+            "radar",
+            "avoid"
           ],
           "title": "Kind",
           "type": "string"

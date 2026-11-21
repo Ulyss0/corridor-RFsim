@@ -31,12 +31,16 @@ const STYLE: StyleSpecification = {
   ],
 }
 
+/** Marker colour of an enemy threat, by type. */
+const THREAT_COLOR = { radar: '#fd7e14', jammer: '#9c36b5', avoid: '#fab005' } as const
+
 export const COLORS = {
   friendlyOn: '#e03131',
   friendlyCut: '#2f9e44',
   friendlyPending: '#f08c00',
   enemy: '#9c36b5',
   radar: '#fd7e14',
+  avoid: '#fab005',
   baseline: '#adb5bd',
   optimised: '#22b8cf',
   preview: '#f08c00',
@@ -122,6 +126,8 @@ export interface MapView {
   set3D(enabled: boolean): void
   is3D(): boolean
   fitScene(): void
+  /** Frames these points: centred on one (zoom kept), fitted around several. */
+  frame(points: Position[]): void
   centerOnDrone(pos?: Position | null): void
   destroy(): void
 }
@@ -402,7 +408,7 @@ export function createMapView(container: HTMLElement): MapView {
         markers.push(point(m.target, `TARGET ${m.id}`, '#ffd43b', movable ? { mission: m.id, point: 'target' } : undefined))
       }
       for (const j of scenario.friendly_jammers) markers.push(label(map, j.pos, `${j.id} · ${j.operator_callsign}`, COLORS.friendlyOn))
-      for (const t of scenario.enemy_threats) markers.push(label(map, t.pos, t.id, t.type === 'radar' ? COLORS.radar : COLORS.enemy))
+      for (const t of scenario.enemy_threats) markers.push(label(map, t.pos, t.id, THREAT_COLOR[t.type]))
     },
     setRequest({ launch, target, picking }) {
       requestMarkers.splice(0).forEach((m) => m.remove())
@@ -498,6 +504,20 @@ export function createMapView(container: HTMLElement): MapView {
         map.fitBounds(box, { padding: 48, duration: 450 })
       }
     },
+    frame(points: Position[]) {
+      if (points.length === 0) return
+      if (points.length === 1) {
+        map.easeTo({ center: [points[0].lon, points[0].lat], duration: 450 })
+        return
+      }
+      const lons = points.map((p) => p.lon)
+      const lats = points.map((p) => p.lat)
+      const box: [[number, number], [number, number]] = [
+        [Math.min(...lons), Math.min(...lats)],
+        [Math.max(...lons), Math.max(...lats)],
+      ]
+      map.fitBounds(box, { padding: 80, duration: 450, maxZoom: 15 })
+    },
     centerOnDrone(pos?: Position | null) {
       if (pos) {
         map.easeTo({ center: [pos.lon, pos.lat], duration: 450 })
@@ -520,6 +540,7 @@ export function createMapView(container: HTMLElement): MapView {
 function zoneStyle(z: Zone, state: ZoneState): { color: string; opacity: number } {
   if (z.kind === 'radar') return { color: COLORS.radar, opacity: 0.2 }
   if (z.kind === 'enemy_jammer') return { color: COLORS.enemy, opacity: 0.2 }
+  if (z.kind === 'avoid') return { color: COLORS.avoid, opacity: 0.12 }
   if (state === 'cut') return { color: COLORS.friendlyCut, opacity: 0.08 }
   if (state === 'pending') return { color: COLORS.friendlyPending, opacity: 0.18 }
   return { color: COLORS.friendlyOn, opacity: 0.22 }

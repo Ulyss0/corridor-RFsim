@@ -107,7 +107,22 @@ class EnemyJammer(Model):
     )
 
 
-EnemyThreat = Annotated[EnemyRadar | EnemyJammer, Field(discriminator="type")]
+class AvoidZone(Model):
+    """Area the command advises against (reported activity, no located emitter).
+
+    Shown with the threats and in each mission's zones, but not forbidden: the planner may cross
+    it. Making routes avoid it when there is a reasonable alternative is still to do.
+    """
+
+    type: Literal["avoid"] = "avoid"
+    id: str
+    pos: Position
+    radius_m: float = Field(gt=0)
+
+
+EnemyThreat = Annotated[EnemyRadar | EnemyJammer | AvoidZone, Field(discriminator="type")]
+THREAT_PREFIX = {"radar": "R", "jammer": "E", "avoid": "A"}
+"""Id prefix of a threat the command adds, by type."""
 
 
 class Drone(Model):
@@ -150,6 +165,36 @@ class Mission(Model):
     departure_s: float = Field(ge=0, description="Earliest departure.")
 
 
+class Terrain(Model):
+    """Ground under the area and flight levels above it (``corridor.domain.terrain``)."""
+
+    dem: str | None = Field(
+        default=None,
+        description=(
+            "Elevation file (GeoTIFF, metres above sea level), a path inside backend/data/."
+            " None: flat ground."
+        ),
+    )
+    levels_m: tuple[float, ...] = Field(
+        default=(30.0, 60.0, 120.0, 250.0),
+        min_length=1,
+        description="Flight levels, metres above the ground, lowest first.",
+    )
+    mode: Literal["2d", "3d"] = Field(
+        default="2d",
+        description=(
+            "2d: one layer, free-space zones (discs). 3d: the flight levels, zones through the"
+            " terrain, climbs and descents."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _levels_rise(self) -> Self:
+        if self.levels_m[0] <= 0 or any(b <= a for a, b in itertools.pairwise(self.levels_m)):
+            raise ValueError("levels_m must be positive and strictly increasing")
+        return self
+
+
 class ReferenceLink(Model):
     """Control link assumed for the nominal footprint of a jammer, seen without any mission."""
 
@@ -169,6 +214,7 @@ class Scenario(Model):
     command_callsign: str = Field(description="Callsign of the command post, which sees all.")
     friendly_jammers: list[FriendlyJammer]
     enemy_threats: list[EnemyThreat] = Field(default_factory=list)
+    terrain: Terrain = Field(default_factory=Terrain)
     pilots: list[Pilot] = Field(min_length=1)
     missions: list[Mission] = Field(
         default_factory=list,
@@ -265,5 +311,19 @@ def _no_duplicates(what: str, values: list[str]) -> None:
         raise ValueError(f"duplicate {what}: {duplicates}")
 
 
+SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "scenarios"
+"""``backend/scenarios``: the only folder scenario files are read from."""
+
+
 def load_scenario(path: Path) -> Scenario:
-    return Scenario.model_validate_json(path.read_text(encoding="utf-8"))
+    """Raises ValueError if ``path`` is outside ``SCENARIOS_DIR``, if the file is invalid or if
+    its elevation file is missing: the server reads no file the team did not put there."""
+    from corridor.domain.terrain import check_terrain  # terrain imports this module
+
+    root = SCENARIOS_DIR.resolve()
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"scenario files must be inside {root}: {path}")
+    scenario = Scenario.model_validate_json(resolved.read_text(encoding="utf-8"))
+    check_terrain(scenario.terrain)
+    return scenario

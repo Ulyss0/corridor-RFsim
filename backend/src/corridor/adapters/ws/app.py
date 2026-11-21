@@ -17,7 +17,6 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Callable
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -27,7 +26,13 @@ from pydantic import ValidationError
 from corridor.adapters.ws.audience import Audience, Viewer
 from corridor.adapters.ws.hub import Hub, Outbox
 from corridor.adapters.ws.schemas import Ack, ClientMessage, Error, MissionView, Snapshot
-from corridor.domain.events import Event, MissionCreated, MissionUpdated
+from corridor.domain.events import (
+    Event,
+    MissionCreated,
+    MissionUpdated,
+    ThreatAdded,
+    ThreatRemoved,
+)
 from corridor.domain.geo import Position
 from corridor.domain.rf.coverage import (
     ContourLevel,
@@ -36,9 +41,10 @@ from corridor.domain.rf.coverage import (
     polar_coverage_to_geojson,
     probe_point_rf,
 )
-from corridor.domain.rf.dem import DemProvider, HillFeature, RasterDem, SyntheticDem
+from corridor.domain.rf.dem import DemProvider
 from corridor.domain.scenario import Scenario
-from corridor.domain.zones import Zone, nominal_zones
+from corridor.domain.terrain import ground_model
+from corridor.domain.zones import nominal_zones
 from corridor.engine.clock import SimClock
 from corridor.engine.engine import CommandRejected, Engine, MissionRuntime
 from corridor.engine.replan import Replanner
@@ -59,8 +65,10 @@ async def _tick_forever(engine: Engine) -> None:
         await asyncio.sleep(TICK_S)
 
 
-def snapshot(engine: Engine, audience: Audience, viewer: Viewer, nominal: list[Zone]) -> Snapshot:
+def snapshot(engine: Engine, audience: Audience, viewer: Viewer) -> Snapshot:
+    """Nominal zones come from the current threats: the command adds and removes them."""
     scope = audience.scope(viewer)
+    nominal = nominal_zones(engine.scenario)
     return Snapshot(
         viewer=viewer,
         scenario=audience.scenario_for(viewer),
@@ -103,52 +111,9 @@ async def _pump(websocket: WebSocket, outbox: Outbox) -> None:
         await websocket.send_text(await outbox.get())
 
 
-def _find_dem_path(name: str) -> Path | None:
-    for candidate in [
-        Path("data") / name,
-        Path("backend/data") / name,
-        Path(__file__).resolve().parents[4] / "data" / name,
-    ]:
-        if candidate.exists():
-            return candidate
-    return None
-
-
 def _select_dem(scenario: Scenario) -> DemProvider:
-    # The scenario may start without missions: any jammer or threat locates the area too.
-    places = [
-        *(m.launch for m in scenario.missions),
-        *(j.pos for j in scenario.friendly_jammers),
-        *(t.pos for t in scenario.enemy_threats),
-    ]
-    launch_p = places[0] if places else Position(lat=48.14, lon=11.58)
-    ny = _find_dem_path("copernicus_newyork.tif")
-    if 40.5 <= launch_p.lat <= 41.0 and ny:
-        return RasterDem(ny)
-    annecy = _find_dem_path("copernicus_annecy.tif")
-    if 45.5 <= launch_p.lat <= 46.5 and annecy:
-        return RasterDem(annecy)
-    hk = _find_dem_path("copernicus_hongkong.tif")
-    if 22.0 <= launch_p.lat <= 22.5 and hk:
-        return RasterDem(hk)
-    munich = _find_dem_path("copernicus_munich.tif")
-    if munich:
-        return RasterDem(munich)
-    return SyntheticDem(
-        base_elevation_m=520.0,
-        hills=[
-            HillFeature(
-                center=Position(lat=48.160, lon=11.550),
-                radius_m=1200.0,
-                height_m=95.0,
-            ),
-            HillFeature(
-                center=Position(lat=48.130, lon=11.580),
-                radius_m=1000.0,
-                height_m=80.0,
-            ),
-        ],
-    )
+    """The scenario's elevation file, or flat ground (``corridor.domain.terrain``)."""
+    return ground_model(scenario.terrain)
 
 
 def _build_threat_coverage_features(
@@ -216,7 +181,6 @@ def create_app(
     replanner: ReplannerFactory | None = None,
 ) -> FastAPI:
     """Without ``replanner``, nothing is planned. The first plan is requested at startup."""
-    nominal = nominal_zones(scenario)
     planner = replanner(scenario) if replanner else None
     engine = Engine(scenario, cell_m, SimClock(clock_factor), planner)
     audience = Audience(engine)
@@ -226,9 +190,9 @@ def create_app(
         hub.publish(event)
 
         def snapshot_for(viewer: Viewer) -> Snapshot:
-            return snapshot(engine, audience, viewer, nominal)
+            return snapshot(engine, audience, viewer)
 
-        if isinstance(event, MissionCreated):
+        if isinstance(event, MissionCreated | ThreatAdded | ThreatRemoved):
             hub.resync(snapshot_for, lambda viewer: audience.sees(viewer, event))
         elif isinstance(event, MissionUpdated):
             hub.resync(snapshot_for, lambda _: True)
@@ -342,7 +306,7 @@ def create_app(
         if viewer is None:
             await websocket.close(code=UNKNOWN_CALLSIGN, reason=f"unknown callsign {callsign!r}")
             return
-        outbox = hub.connect(viewer, snapshot(engine, audience, viewer, nominal))
+        outbox = hub.connect(viewer, snapshot(engine, audience, viewer))
         sender = asyncio.create_task(_pump(websocket, outbox))
         try:
             while True:

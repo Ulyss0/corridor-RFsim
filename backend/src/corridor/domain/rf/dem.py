@@ -31,6 +31,15 @@ class DemProvider(Protocol):
         """Vectorized elevations in metres AMSL for an ordered sequence of positions."""
         ...
 
+    def get_elevations_lonlat(
+        self, lons: np.ndarray, lats: np.ndarray, nearest: bool = False
+    ) -> np.ndarray:
+        """Elevations in metres AMSL at arrays of longitudes and latitudes, any shape.
+
+        ``nearest``: the value of the raster cell each point falls in, not interpolated, so a
+        one-pixel peak or pit keeps its full height."""
+        ...
+
 
 @dataclass(frozen=True)
 class HillFeature:
@@ -64,6 +73,16 @@ class SyntheticDem:
     def get_elevations(self, positions: Sequence[Position]) -> np.ndarray:
         return np.array([self.get_elevation(p) for p in positions], dtype=np.float64)
 
+    def get_elevations_lonlat(
+        self, lons: np.ndarray, lats: np.ndarray, nearest: bool = False
+    ) -> np.ndarray:
+        lons, lats = np.broadcast_arrays(lons, lats)
+        flat = [
+            self.get_elevation(Position(lat=float(lat), lon=float(lon)))
+            for lon, lat in zip(lons.ravel(), lats.ravel(), strict=True)
+        ]
+        return np.asarray(flat, dtype=np.float64).reshape(lons.shape)
+
 
 class RasterDem:
     """Raster-backed DEM provider (GeoTIFF / COG) with bilinear interpolation."""
@@ -89,11 +108,17 @@ class RasterDem:
         if not positions:
             return np.empty(0, dtype=np.float64)
 
-        xs = [p.lon for p in positions]
-        ys = [p.lat for p in positions]
+        xs = np.asarray([p.lon for p in positions], dtype=np.float64)
+        ys = np.asarray([p.lat for p in positions], dtype=np.float64)
+        return self.get_elevations_lonlat(xs, ys)
 
-        xs_arr = np.asarray(xs, dtype=np.float64)
-        ys_arr = np.asarray(ys, dtype=np.float64)
+    def get_elevations_lonlat(
+        self, lons: np.ndarray, lats: np.ndarray, nearest: bool = False
+    ) -> np.ndarray:
+        lons, lats = np.broadcast_arrays(lons, lats)
+        shape = lons.shape
+        xs_arr = np.asarray(lons, dtype=np.float64).ravel()
+        ys_arr = np.asarray(lats, dtype=np.float64).ravel()
 
         # Vectorized transform from geographic (lon, lat) to pixel coordinates (col, row)
         # using the inverse affine transformation coefficients
@@ -102,13 +127,15 @@ class RasterDem:
         rows_arr = inv.d * xs_arr + inv.e * ys_arr + inv.f
 
         # Bilinear interpolation via scipy.ndimage.map_coordinates
-        # order=1 is bilinear interpolation, mode='nearest' clamps to boundary
-        coords = np.vstack([rows_arr, cols_arr])
-        elevations = map_coordinates(self._data, coords, order=1, mode="nearest")
+        # order=1 is bilinear interpolation, mode='nearest' clamps to boundary.
+        # The transform gives pixel corners; map_coordinates samples pixel centres.
+        coords = np.vstack([rows_arr - 0.5, cols_arr - 0.5])
+        order = 0 if nearest else 1
+        elevations = map_coordinates(self._data, coords, order=order, mode="nearest")
 
         # Handle nodata if present
         elevations = np.where(elevations == self.nodata, 0.0, elevations)
-        return elevations
+        return elevations.reshape(shape)
 
     @classmethod
     def create_test_raster(

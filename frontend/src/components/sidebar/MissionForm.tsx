@@ -1,14 +1,15 @@
-// The mission form, at the top of the sidebar: a pilot's new mission (top bar button), or a change
-// to a mission still on the ground (mission card). Launch and target are typed or pasted
+// The mission form, over the sidebar panel: a pilot's new mission (action bar), or a change to a
+// mission still on the ground (mission detail). Launch and target are typed or pasted
 // ("lat, lon"), or picked on the map.
-import { ActionIcon, Alert, Button, Card, CloseButton, Group, SegmentedControl, Stack, Text, TextInput, Tooltip } from '@mantine/core'
+import { ActionIcon, Alert, Button, Group, SegmentedControl, Stack, Text, TextInput, Tooltip } from '@mantine/core'
 import { useState } from 'react'
-import { send } from '../api/client'
-import type { Mission, Position } from '../api/protocol'
-import { clockLabel, distanceM, formatPosition, missionOf, nextClockTime, parsePosition } from '../domain/view'
-import { useLiveSimTime } from '../hooks/useSimNow'
-import { useStore } from '../store'
-import { CrosshairIcon } from './Icons'
+import { send } from '../../api/client'
+import type { Mission, Position } from '../../api/protocol'
+import { clockLabel, distanceM, formatPosition, missionOf, nextClockTime, parsePosition } from '../../domain/view'
+import { useLiveSimTime } from '../../hooks/useSimNow'
+import { useStore } from '../../store'
+import { CrosshairIcon } from '../Icons'
+import { PanelHeader } from './parts'
 
 type When = 'keep' | 'asap' | '5' | '15' | 'at'
 
@@ -19,17 +20,17 @@ const WHEN = [
   { value: 'at', label: 'At time' },
 ]
 
-export function NewMissionCard() {
+export function MissionForm() {
   const snapshot = useStore((s) => s.snapshot)
   const draft = useStore((s) => s.requestDraft)
   if (!snapshot || !draft.open) return null
   const edited = draft.editing ? missionOf(snapshot.scenario, draft.editing) : undefined
   if (draft.editing && !edited) return null
   // Keyed: the departure choice starts over for each mission.
-  return <MissionForm key={draft.editing ?? 'new'} edited={edited ?? null} />
+  return <Form key={draft.editing ?? 'new'} edited={edited ?? null} />
 }
 
-function MissionForm({ edited }: { readonly edited: Mission | null }) {
+function Form({ edited }: { readonly edited: Mission | null }) {
   const snapshot = useStore((s) => s.snapshot)
   const callsign = useStore((s) => s.callsign)
   const draft = useStore((s) => s.requestDraft)
@@ -57,63 +58,58 @@ function MissionForm({ edited }: { readonly edited: Mission | null }) {
   }
 
   return (
-    <Card withBorder padding="sm">
-      <Group justify="space-between" mb="xs">
-        <Text fw={700}>{edited ? `Change mission ${edited.id}` : 'New mission'}</Text>
-        <CloseButton size="sm" aria-label="Close the mission form" onClick={close} />
-      </Group>
-      <Stack gap="sm">
-        {drone && (
-          <Text size="xs" c="dimmed">
-            {drone.id} · {drone.band} · {drone.cruise_speed_mps} m/s · {Math.round(drone.battery_max_s / 60)} min of battery
-          </Text>
+    <Stack gap="sm">
+      <PanelHeader title={edited ? `Change mission ${edited.id}` : 'New mission'} onClose={close} />
+      {drone && (
+        <Text size="xs" c="dimmed">
+          {drone.id} · {drone.band} · {drone.cruise_speed_mps} m/s · {Math.round(drone.battery_max_s / 60)} min of battery
+        </Text>
+      )}
+
+      <PointField
+        label="Launch point"
+        hint="Where you stand: the drone takes off here."
+        value={launch}
+        picking={draft.picking === 'launch'}
+        onChange={(p) => setDraft({ launch: p })}
+        onPick={() => setDraft({ picking: draft.picking === 'launch' ? null : 'launch' })}
+      />
+      <PointField
+        label="Target"
+        value={target}
+        picking={draft.picking === 'target'}
+        onChange={(p) => setDraft({ target: p })}
+        onPick={() => setDraft({ picking: draft.picking === 'target' ? null : 'target' })}
+      />
+
+      <div>
+        <Text size="sm" fw={500} mb={4}>Departure</Text>
+        <SegmentedControl fullWidth size="xs" data={options} value={when} onChange={(v) => setWhen(v as When)} />
+        {when === 'at' && (
+          <TextInput
+            mt="xs"
+            type="time"
+            label="Time (UTC)"
+            value={at}
+            onChange={(e) => setAt(e.currentTarget.value)}
+            error={at && departureS === null ? 'Not a valid time' : undefined}
+          />
         )}
+        <Text size="xs" c="dimmed" mt={4}>
+          {departureS === null ? 'Pick a time.' : `Earliest take-off ${clockLabel(startTime, departureS)}`}
+          {when === 'at' && departureS !== null && departureS - now > 43_200 && ' (tomorrow)'}
+        </Text>
+      </div>
 
-        <PointField
-          label="Launch point"
-          hint="Where you stand: the drone takes off here."
-          value={launch}
-          picking={draft.picking === 'launch'}
-          onChange={(p) => setDraft({ launch: p })}
-          onPick={() => setDraft({ picking: draft.picking === 'launch' ? null : 'launch' })}
-        />
-        <PointField
-          label="Target"
-          value={target}
-          picking={draft.picking === 'target'}
-          onChange={(p) => setDraft({ target: p })}
-          onPick={() => setDraft({ picking: draft.picking === 'target' ? null : 'target' })}
-        />
+      {launch && target && drone && <Reach launch={launch} target={target} speed={drone.cruise_speed_mps} battery={drone.battery_max_s} />}
 
-        <div>
-          <Text size="sm" fw={500} mb={4}>Departure</Text>
-          <SegmentedControl fullWidth size="xs" data={options} value={when} onChange={(v) => setWhen(v as When)} />
-          {when === 'at' && (
-            <TextInput
-              mt="xs"
-              type="time"
-              label="Time (UTC)"
-              value={at}
-              onChange={(e) => setAt(e.currentTarget.value)}
-              error={at && departureS === null ? 'Not a valid time' : undefined}
-            />
-          )}
-          <Text size="xs" c="dimmed" mt={4}>
-            {departureS === null ? 'Pick a time.' : `Earliest take-off ${clockLabel(startTime, departureS)}`}
-            {when === 'at' && departureS !== null && departureS - now > 43_200 && ' (tomorrow)'}
-          </Text>
-        </div>
-
-        {launch && target && drone && <Reach launch={launch} target={target} speed={drone.cruise_speed_mps} battery={drone.battery_max_s} />}
-
-        <Group justify="flex-end" gap="xs">
-          <Button variant="subtle" color="gray" onClick={close}>Cancel</Button>
-          <Button disabled={!ready} onClick={submit}>
-            {edited ? 'Update mission' : 'Request mission'}
-          </Button>
-        </Group>
-      </Stack>
-    </Card>
+      <Group justify="flex-end" gap="xs">
+        <Button variant="subtle" color="gray" onClick={close}>Cancel</Button>
+        <Button disabled={!ready} onClick={submit}>
+          {edited ? 'Update mission' : 'Request mission'}
+        </Button>
+      </Group>
+    </Stack>
   )
 }
 

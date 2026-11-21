@@ -96,6 +96,46 @@ class InjectDelay(Model):
     delay_s: float = Field(gt=0, le=1800)
 
 
+class AddThreat(Model):
+    """The command reports an enemy threat or a zone to avoid; the server gives it an id.
+
+    A radar and a zone to avoid take ``radius_m``, an enemy jammer ``eirp_w`` and ``bands``.
+    """
+
+    type: Literal["threat.add"] = "threat.add"
+    actor: str
+    kind: Literal["radar", "jammer", "avoid"]
+    pos: Position
+    radius_m: float | None = Field(
+        default=None, gt=0, description="Radar range or radius of the zone to avoid, metres."
+    )
+    eirp_w: float | None = Field(default=None, gt=0, description="Jammer EIRP, watts.")
+    bands: list[str] | None = Field(default=None, min_length=1, description="Jammer bands.")
+    position_error_m: float = Field(
+        default=0, ge=0, description="Uncertainty on `pos`, metres (radar and jammer)."
+    )
+
+    @model_validator(mode="after")
+    def _fields_match_kind(self) -> Self:
+        power = self.eirp_w is not None, self.bands is not None
+        if self.kind == "jammer":
+            if not all(power) or self.radius_m is not None:
+                raise ValueError("a jammer takes eirp_w and bands, not radius_m")
+        elif any(power) or self.radius_m is None:
+            raise ValueError("a radar or a zone to avoid takes radius_m, not eirp_w or bands")
+        if self.kind == "avoid" and self.position_error_m:
+            raise ValueError("a zone to avoid has no position error: widen its radius")
+        return self
+
+
+class RemoveThreat(Model):
+    """The command removes an enemy threat or a zone to avoid, from the file or added."""
+
+    type: Literal["threat.remove"] = "threat.remove"
+    actor: str
+    threat: str
+
+
 Command = Annotated[
     ScheduleCut
     | CancelCut
@@ -104,6 +144,8 @@ Command = Annotated[
     | UpdateMission
     | LaunchMission
     | SetClock
-    | InjectDelay,
+    | InjectDelay
+    | AddThreat
+    | RemoveThreat,
     Field(discriminator="type"),
 ]

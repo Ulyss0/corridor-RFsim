@@ -5,7 +5,7 @@ import { useEffect, useRef } from 'react'
 import { ActionIcon, Button, Group, Text, Tooltip } from '@mantine/core'
 import { Timeline } from 'vis-timeline/standalone'
 import 'vis-timeline/styles/vis-timeline-graph2d.min.css'
-import { clockLabel, type Phase, routePhases } from '../domain/view'
+import { clockLabel, missionOf, missionSpan, type Phase, routePhases } from '../domain/view'
 import { useLiveSimTime } from '../hooks/useSimNow'
 import { useStore } from '../store'
 import { CrosshairIcon, RotateCcwIcon, ZoomInIcon, ZoomOutIcon } from './Icons'
@@ -129,6 +129,20 @@ export function TimelinePanel() {
     }
     timeline.current?.setItems(next)
   }, [cuts, missions, start, snapshot])
+
+  // A mission clicked in the sidebar: frame its flight, with a margin on both sides. Read once
+  // per click: later plans must not move the window.
+  const focus = useStore((s) => s.focus)
+  useEffect(() => {
+    if (focus?.kind !== 'mission') return
+    const state = useStore.getState()
+    const mission = state.snapshot ? missionOf(state.snapshot.scenario, focus.id) : undefined
+    if (!state.snapshot || !mission) return
+    const [from, to] = missionSpan(mission, state.missions[focus.id]?.plan?.optimised_route)
+    const pad = Math.max(60, (to - from) * 0.1)
+    const st = state.snapshot.scenario.start_time
+    timeline.current?.setWindow(toTl(st, Math.max(0, from - pad)), toTl(st, to + pad), { animation: true })
+  }, [focus])
 
   // Cursor follows live time unless the user is scrubbing.
   useEffect(() => {

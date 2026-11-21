@@ -1,11 +1,13 @@
-import { Alert, Badge, Button, Card, Group, Progress, Stack, Text } from '@mantine/core'
-import { send } from '../api/client'
-import type { PlanUpdated } from '../api/protocol'
-import { mockPlan } from '../dev/mockPlan'
-import { clockLabel, missionOf, routePhases } from '../domain/view'
-import { ROUTE_COLORS } from '../map/mapView'
-import { useSelectedMission, useStore } from '../store'
-import { STATUS_COLOR } from './colors'
+// One mission in detail: its plan, drone, the cuts of the jammers it concerns, and its actions.
+import { Alert, Badge, Button, Group, Progress, Stack, Text } from '@mantine/core'
+import { send } from '../../api/client'
+import type { PlanUpdated } from '../../api/protocol'
+import { mockPlan } from '../../dev/mockPlan'
+import { clockLabel, missionOf, routePhases } from '../../domain/view'
+import { ROUTE_COLORS } from '../../map/mapView'
+import { useStore } from '../../store'
+import { STATUS_COLOR } from '../colors'
+import { CutRow, PanelHeader, SectionTitle } from './parts'
 
 const PLAN_TEXT: Record<PlanUpdated['status'], { title: string; color: string; detail: string }> = {
   baseline: { title: 'Detour', color: 'gray', detail: 'No usable cut: every friendly jammer is assumed on.' },
@@ -14,15 +16,22 @@ const PLAN_TEXT: Record<PlanUpdated['status'], { title: string; color: string; d
   fallback: { title: 'Fallback route', color: 'red', detail: 'The drone could not keep its crossing window: safe route, using no cut.' },
 }
 
-export function MissionCard() {
+export function MissionDetail({ id }: { readonly id: string }) {
   const snapshot = useStore((s) => s.snapshot)
   const callsign = useStore((s) => s.callsign)
   const cuts = useStore((s) => s.cuts)
-  const view = useSelectedMission()
-  if (!snapshot || !view) return null
+  const view = useStore((s) => s.missions[id])
+  const openList = useStore((s) => s.openList)
+  const m = snapshot ? missionOf(snapshot.scenario, id) : undefined
+  if (!snapshot || !view || !m) {
+    return (
+      <Stack gap="xs">
+        <PanelHeader title={`Mission ${id}`} onBack={openList} />
+        <Text size="sm" c="dimmed">This mission is no longer in your view.</Text>
+      </Stack>
+    )
+  }
   const { start_time, command_callsign } = snapshot.scenario
-  const m = missionOf(snapshot.scenario, view.constraints.mission)
-  if (!m) return null
   const { status, plan, drone } = view
   const label = (t: number) => clockLabel(start_time, t)
   // The server enforces it too; the button only reflects the rule.
@@ -39,15 +48,19 @@ export function MissionCard() {
   const compare = plan && (plan.status === 'preview' || plan.status === 'approved')
   const text = plan ? PLAN_TEXT[plan.status] : null
   const takeoff = plan?.optimised_route.find((p) => p.action !== 'ground')?.t
-  const arrival = plan?.optimised_route[plan.optimised_route.length - 1].t
+  const arrival = plan?.optimised_route.at(-1)?.t
+  const missionCuts = Object.values(cuts)
+    .filter((c) => view.constraints.jammers.includes(c.jammer))
+    .sort((a, b) => a.start_s - b.start_s)
 
   return (
-    <Card withBorder padding="sm">
-      <Group justify="space-between" mb={4}>
-        <Text fw={700}>Mission {m.id} · {m.drone_id}</Text>
-        <Badge color={STATUS_COLOR[status]}>{status}</Badge>
-      </Group>
-      <Text size="xs" c="dimmed">
+    <Stack gap={0}>
+      <PanelHeader
+        title={`Mission ${m.id} · ${m.drone_id}`}
+        badge={<Badge color={STATUS_COLOR[status]}>{status}</Badge>}
+        onBack={openList}
+      />
+      <Text size="xs" c="dimmed" mt={4}>
         Pilot {m.pilot_callsign} · {m.band} · {m.cruise_speed_mps} m/s · battery {Math.round(m.battery_max_s / 60)} min · departure from {label(m.departure_s)}
       </Text>
       <Text size="xs" c="dimmed" mt={4}>
@@ -132,7 +145,25 @@ export function MissionCard() {
           </Button>
         )}
       </Group>
-    </Card>
+
+      {view.constraints.jammers.length > 0 && (
+        <Stack gap={6} mt="sm">
+          <SectionTitle>Cuts on its jammers</SectionTitle>
+          {missionCuts.length === 0 && <Text size="sm" c="dimmed">No cut scheduled.</Text>}
+          {missionCuts.map((c) => (
+            <CutRow key={c.id} cut={c} showJammer />
+          ))}
+          <Button
+            size="xs"
+            variant="light"
+            color="orange"
+            onClick={() => useStore.getState().openCut({ jammer: null, mission: m.id })}
+          >
+            Ask for a cut for {m.id}
+          </Button>
+        </Stack>
+      )}
+    </Stack>
   )
 }
 

@@ -1,6 +1,6 @@
 import { Badge, Button, Group, SegmentedControl, Text, Title } from '@mantine/core'
 import { send, signOut } from '../api/client'
-import { clockLabel, missionOf } from '../domain/view'
+import { clockLabel } from '../domain/view'
 import { useViewTime } from '../hooks/useSimNow'
 import { useStore } from '../store'
 import { ROLE_COLOR } from './colors'
@@ -23,15 +23,6 @@ export function TopBar({ onToggleGroundTeam, isGroundTeamView }: TopBarProps = {
   const t = useViewTime()
 
   const role = snapshot?.viewer.role
-  const openRequest = useStore((s) => s.openRequest)
-  // The pilot stands where its selected (else last) mission took off: a good guess for the next.
-  const lastLaunch = () => {
-    if (!snapshot) return null
-    const own = snapshot.scenario.missions.filter((m) => m.pilot_callsign === callsign)
-    const selected = useStore.getState().selectedMission
-    const pick = (selected ? missionOf(snapshot.scenario, selected) : undefined) ?? own.at(-1)
-    return pick?.pilot_callsign === callsign ? pick.launch : null
-  }
 
   return (
     <Group className="topbar" justify="space-between" px="md" wrap="nowrap">
@@ -63,11 +54,6 @@ export function TopBar({ onToggleGroundTeam, isGroundTeamView }: TopBarProps = {
       </Group>
 
       <Group gap="xs" wrap="nowrap">
-        {role === 'pilot' && (
-          <Button size="xs" onClick={() => openRequest(lastLaunch())}>
-            New mission
-          </Button>
-        )}
         {role === 'command' && onToggleGroundTeam && (
           <Button
             size="xs"

@@ -8,16 +8,16 @@ export function mockPlan(m: Mission, cuts: Cut[]): PlanUpdated {
   const cut = [...cuts].sort((a, b) => a.start_s - b.start_s)[0]
   const takeoff = cut ? Math.max(m.departure_s, cut.start_s + 30 - flyS / 2) : m.departure_s
   const optimised: RoutePoint[] = [
-    { ...m.launch, t: m.departure_s, action: 'ground' },
-    { ...m.launch, t: takeoff, action: 'fly' },
-    { ...m.target, t: takeoff + flyS, action: 'hover' },
+    { ...m.launch, t: m.departure_s, action: 'ground', alt_m: null },
+    { ...m.launch, t: takeoff, action: 'fly', alt_m: null },
+    { ...m.target, t: takeoff + flyS, action: 'hover', alt_m: null },
   ]
   const mid = { lat: (m.launch.lat + m.target.lat) / 2 + 0.035, lon: (m.launch.lon + m.target.lon) / 2 }
   const legS = (haversine(m.launch, mid) + haversine(mid, m.target)) / m.cruise_speed_mps
   const baseline: RoutePoint[] = [
-    { ...m.launch, t: m.departure_s, action: 'fly' },
-    { ...mid, t: m.departure_s + legS / 2, action: 'fly' },
-    { ...m.target, t: m.departure_s + legS, action: 'hover' },
+    { ...m.launch, t: m.departure_s, action: 'fly', alt_m: null },
+    { ...mid, t: m.departure_s + legS / 2, action: 'fly', alt_m: null },
+    { ...m.target, t: m.departure_s + legS, action: 'hover', alt_m: null },
   ]
   const base = (100 * legS) / m.battery_max_s
   const opt = (100 * flyS) / m.battery_max_s
@@ -34,6 +34,7 @@ export function mockPlan(m: Mission, cuts: Cut[]): PlanUpdated {
     },
     baseline_route: baseline,
     optimised_route: optimised,
+    profile: [],
   }
 }
 

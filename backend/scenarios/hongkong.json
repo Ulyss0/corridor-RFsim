@@ -35,6 +35,7 @@
       ]
     }
   ],
+  "terrain": { "dem": "copernicus_hongkong.tif" },
   "pilots": [
     {
       "callsign": "PILOT-1",

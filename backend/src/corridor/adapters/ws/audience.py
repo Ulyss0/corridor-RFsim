@@ -28,6 +28,8 @@ from corridor.domain.events import (
     MissionUpdated,
     Notification,
     PlanUpdated,
+    ThreatAdded,
+    ThreatRemoved,
 )
 from corridor.domain.model import Model
 from corridor.domain.scenario import Role, Scenario
@@ -111,6 +113,8 @@ class Audience:
                 return event.mission in scope.missions
             case MissionCreated() | MissionUpdated():
                 return event.mission.id in scope.missions
+            case ThreatAdded() | ThreatRemoved():
+                return not scope.missions.isdisjoint(event.missions)
             case _:
                 assert_never(event)
 

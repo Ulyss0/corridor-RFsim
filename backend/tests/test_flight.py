@@ -40,6 +40,7 @@ class SyncReplanner:
 
     def request(
         self,
+        scenario: Scenario,
         mission: Mission,
         grid: Grid,
         revision: int,
@@ -47,18 +48,20 @@ class SyncReplanner:
         earliest_departure_s: float,
         done: PlanDone,
     ) -> None:
-        done(revision, plan_mission(self.scenario, mission, grid, cuts, earliest_departure_s))
+        done(revision, plan_mission(scenario, mission, grid, cuts, earliest_departure_s))
 
     def request_fallback(
         self,
+        scenario: Scenario,
         mission: Mission,
         grid: Grid,
         revision: int,
         position: Position,
         now_s: float,
         done: PlanDone,
+        level: int = 0,
     ) -> None:
-        done(revision, plan_fallback(self.scenario, mission, grid, position, now_s))
+        done(revision, plan_fallback(scenario, mission, grid, position, now_s, level))
 
     def close(self) -> None:
         pass
@@ -201,3 +204,40 @@ def test_a_requested_mission_is_planned_and_flies(scenario: Scenario) -> None:
     world.engine.submit(LaunchMission(actor=PILOT, mission="M2"))
     world.run_to(1800)
     assert world.engine.state.missions["M2"] == "arrived"
+
+
+# --- 3D ------------------------------------------------------------------------------------
+
+
+def three_d(scenario: Scenario) -> Scenario:
+    terrain = scenario.terrain.model_copy(update={"mode": "3d"})
+    return scenario.model_copy(update={"terrain": terrain})
+
+
+def test_3d_flight_on_a_confirmed_cut_needs_no_fallback(scenario: Scenario) -> None:
+    world = World(three_d(scenario))
+    assert world.m1.cells is not None  # the safety rule checks the zones per level
+    world.cut()
+    plan = world.m1.plan
+    assert plan is not None and plan.status == "approved"
+    assert {p.alt_m for p in plan.optimised_route} - {0.0} <= set(scenario.terrain.levels_m)
+    world.engine.submit(LaunchMission(actor=PILOT, mission="M1"))
+    world.run_to(1800)
+    assert world.engine.state.missions["M1"] == "arrived"
+    assert not any(p.status == "fallback" for p in world.of(PlanUpdated))
+
+
+def test_3d_late_drone_falls_back_from_its_level(scenario: Scenario) -> None:
+    world = World(three_d(scenario))
+    world.cut()
+    world.engine.submit(LaunchMission(actor=PILOT, mission="M1"))
+    plan = world.m1.plan
+    assert plan is not None
+    takeoff = next(p.t for p in plan.optimised_route if p.action != "ground")
+    world.run_to(takeoff + 60)
+    world.engine.submit(InjectDelay(actor="HQ", mission="M1", delay_s=300))
+    world.run_to(takeoff + 80)
+    fallback = next(p for p in world.of(PlanUpdated) if p.status == "fallback")
+    flight = world.m1.flight
+    assert flight is not None and flight.route == fallback.optimised_route
+    assert fallback.optimised_route[0].alt_m in scenario.terrain.levels_m

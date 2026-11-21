@@ -36,12 +36,17 @@ backend/src/corridor/
     scenario.py   Scenario and its parts, consistency checks, JSON loader
     zones.py      J/S zones (circles of Apollonius, directional beams), radar discs, mission
                   constraints (planning grid, concerned threats), nominal footprints
+    terrain.py    elevation file and flight levels: ground per planning grid (cached), profile
+                  under a route; flat ground without a file
+    zones3d.py    3D jamming zones: J/S per cell and per flight level through the terrain
+                  (knife-edge diffraction), loss fields cached per emitter
     state.py      Cut, ClockState, WorldState (runtime state)
     commands.py   domain commands (discriminated union on "type")
     events.py     domain events (discriminated union on "type")
     planner/
       masks.py    zones rasterised on the grid, one numpy mask per interval between cut boundaries
-      astar.py    SIPP (safe interval path planning): A* over (cell, safe interval)
+      astar.py    SIPP (safe interval path planning): A* over (cell, level, safe interval)
+      layers.py   the masks of each flight level over time, 2D (one layer) or 3D
       plan.py     plan_route() (one set of cuts), plan_mission() (baseline, optimised, metrics),
                   plan_fallback() (from the drone position in flight, no cut)
       smooth.py   string pulling of the grid route on the same masks: fewer points, never in a zone
@@ -66,7 +71,7 @@ backend/scenarios/directional.json   the demo with J3 directional (60° beam to 
 schema/ws.schema.json         generated protocol schema (repository root), consumed by the front end
 ```
 
-Still to write, by whoever owns the piece: the TAK adapter (`adapters/tak`), `inject.enemy_threat`.
+Still to write, by whoever owns the piece: the TAK adapter (`adapters/tak`).
 
 Dependency rule: `domain` imports nothing from `engine` or `adapters`; `engine` imports nothing
 from `adapters`. It can be enforced later with `import-linter` if needed.
@@ -92,7 +97,7 @@ Two kinds of data, kept apart:
 
 | | Scenario | World state |
 |---|---|---|
-| Content | start time, friendly jammers (with optional initial cuts), enemy threats, the pilots and their drone, the missions known at start, the command callsign, the reference link | cuts (scheduled or confirmed), missions requested by pilots, status of each mission; later injected enemy threats |
+| Content | start time, friendly jammers (with optional initial cuts), enemy threats, the pilots and their drone, the missions known at start, the command callsign, the reference link | cuts (scheduled or confirmed), missions requested by pilots, status of each mission; enemy threats and zones to avoid added or removed by the command |
 | Source | `backend/scenarios/*.json`, written by hand for the demo | built by the engine from the scenario, then changed by commands |
 | Lifetime | static during a run | in memory; restart the server to reset |
 
@@ -100,6 +105,30 @@ Two kinds of data, kept apart:
   time field ends in `_s`.
 - Jammers are described by their EIRP (effective isotropic radiated power); the zone they deny
   comes from the J/S (jammer to signal) model below. Radars are discs (`radius_m`).
+- A zone to avoid (`type: "avoid"`, `radius_m`) sits with the enemy threats: reported activity
+  with no located emitter. It is shown and counts as a concerned threat, but the planner may
+  cross it for now (`forbidden_shapes` leaves it out); a high cost instead of nothing is to do.
+- **Terrain** (`terrain`, optional). `dem`: a GeoTIFF elevation file in metres above sea level,
+  in `backend/data/` (Copernicus GLO-30 crops, a surface model: roofs and trees included, about
+  30 m resolution); a name leading out of that folder is refused, and checked at load (scenario
+  files themselves are only read from `backend/scenarios/`). Without it the ground is flat at
+  0 m. `levels_m`: flight levels above the ground, lowest first (default 30 / 60 / 120 / 250 m,
+  the proposal of open decision 39). Each process reads the file once; the ground of a mission
+  grid is cached by file and grid, so a threat that changes the grid gets its ground computed
+  again on first use.
+- **Two grounds per cell** (`ground_cells`), from the file's own pixels (no interpolation) every
+  10 m across the cell. A river reads at the bottom of its bed and roofs and trees stand above
+  the ground, so one value per cell is wrong one way or the other:
+  - `high`, for clearance: highest ground in the cell and its 8 neighbours. Flight levels are
+    measured from it: a drone at 30 m is 30 m above banks, bridges, roofs and trees within a
+    cell around it. On the demo it is a median 8 m above the cell centre, up to about 60 m.
+  - `low`, for terrain masking: lowest ground in the cell. A hill or building hiding the drone
+    from an emitter is never taken higher than it is, so no shadow is assumed where there is
+    none (jamming zones, pilot link, radars).
+  The Copernicus water body mask is not used (not in `backend/data/`); the rule above covers
+  rivers narrower than about two cells. The RF endpoints (`/api/rf/*`) use the same file instead of guessing one
+  from the latitude. `mode`: `2d` (default, one layer, free-space discs) or `3d` (the levels,
+  zones through the terrain, climbs); `scenarios/demo3d.json` is the demo in 3D.
 - A friendly jammer may have a directional `antenna` (`azimuth_deg` clockwise from north,
   `beamwidth_deg` up to 180, `sidelobe_db` up to 0). Its `eirp_w` is then the main beam EIRP.
   Without `antenna` it is omnidirectional. Enemy jammers are omnidirectional for now.
@@ -150,6 +179,7 @@ Scenario file:
   "js_threshold_db": 0,
   "reference_link": { "eirp_w": 10, "range_m": 5000 },
   "command_callsign": "CMD",
+  "terrain": { "dem": "copernicus_munich.tif", "levels_m": [30, 60, 120, 250] },
   "friendly_jammers": [
     { "id": "J3", "operator_callsign": "EW-J3", "pos": { "lat": 48.145, "lon": 11.567 },
       "eirp_w": 2, "bands": ["2.4GHz", "5.8GHz"],
@@ -421,6 +451,8 @@ Rules enforced today:
 | `mission.update` | unknown mission, mission not in `planned`, actor is neither its pilot nor the command |
 | `mission.launch` | unknown mission, mission not in `planned`, actor is neither its pilot nor the command |
 | `inject.delay` | unknown mission, no drone in flight |
+| `threat.add` | actor is not the command; fields not matching the kind (pydantic); a zone the J/S model cannot draw (jammer on a pilot) |
+| `threat.remove` | actor is not the command, unknown threat |
 | any | `actor` is not the callsign the connection gave (WebSocket adapter) |
 
 ## Engine
@@ -436,6 +468,12 @@ Rules enforced today:
   requests its first plan. `mission.update` moves the launch and target (and departure) of a
   mission still `planned`: same constraints rebuilt in place, plan dropped, new plan requested
   with the next revision, so a plan still on its way for the old points is dropped.
+- Threats: `threat.add` and `threat.remove` (command only) change `scenario.enemy_threats`
+  and recompute the constraints of every mission (zones, grid, concerned threats). The missions
+  the threat concerns (after an add, before a remove) get a new plan while `planned`. A drone in
+  flight keeps its route for now; the command and the pilot are told. Ids are given by the
+  server: `R<n>`, `E<n>`, `A<n>`, the first free. Each plan request carries the current
+  scenario, so the planner worker always sees the current threats.
 - Plans: at startup for every mission, and after every `cut.schedule`, `cut.confirm` or
   `cut.cancel` for the missions the cut's jammer concerns, while they are `planned`, the engine
   requests a plan with the next revision of that mission. The planner only gets the cuts of the
@@ -473,6 +511,21 @@ say which cuts are taken into account. One function covers every case:
 | Baseline route | launch point, departure time | no cut, every jammer on |
 | Optimised route | launch point, departure time | confirmed cuts (`approved`), or scheduled ones too (`preview`) |
 | Fallback (drone late, new enemy threat) | current cell and time | no cut (`fallback`) |
+
+**3D planning** (`terrain.mode: "3d"`, `domain/planner/layers.py`). One layer of time masks per
+flight level. A cell is forbidden at a level by a jammer's 3D zone widened by one cell (zones are
+evaluated at cell centres), an enemy jammer's zone widened further by its 2D position margin
+e * k / |k - 1| in whole cells, or a radar's 2D disc (every level). Zones to avoid stay out;
+friendly zones are off during their shrunk cut windows. SIPP then also moves one level up or
+down in place, at 3 m/s (`CLIMB_MPS`, open decision 39; climbing costs its flight time). The
+search starts at the lowest level (the drone's level for a fallback) and ends over the target
+at any level: near it the lowest level may be jammed, and the last descent is the pilot's.
+Route points carry `alt_m` (0 on the ground). Smoothing pulls lines within one level; a climb
+or descent stays as planned, like a hold. In flight, the safety rule checks the zones at the
+drone's level (both levels during a climb). On the Munich demo: detour 686 s with climbs to
+120 m (646 s in 2D), J3 cut 629 s; a plan takes about 1 to 2 s against 0.1 to 0.5 s in 2D,
+within the 3 s replan allowance. Not yet: the pilot's minimum signal, radars masked by terrain,
+a vertical speed or battery cost of its own for climbing.
 
 **Search: SIPP (safe interval path planning)** (`domain/planner/astar.py`).
 - Grid of 100 m cells, one altitude layer, 8 neighbours at cruise speed (a diagonal takes
@@ -545,6 +598,21 @@ from the jammer outward (64 vertices across the beam, the rest on the sidelobe d
 `Zone` contract does not change. A directional jammer with k < 1 is rejected at server start:
 its zone would be an unbounded wedge that a ring cannot describe. The beam is horizontal only
 (the planner is 2D plus time) and its edge is hard, without gain roll-off.
+
+**3D jamming zones** (`domain/zones3d.py`, used by the planner in `3d` mode). For each cell of a
+mission grid and each flight level, J/S from each jammer on the mission band:
+received power = EIRP toward the cell - free-space loss over the slant distance - diffraction
+loss. Diffraction: terrain profile from the emitter to the cell centre, one sample per cell,
+Earth bulge (k = 4/3), the most blocking obstacle as a single knife edge (ITU-R P.526), as in
+`rf/coverage.py`. Lost where J/S >= `js_threshold_db`. Choices that keep zones on the large side:
+the drone at level L flies L above the cell's `high` ground; a jammer path takes its obstacles
+from `low`, the pilot link from `centre` (the surface model as is; `high` would block a 2 m
+pilot antenna everywhere). Antenna heights are constants for now: jammer 10 m, pilot 2 m. On
+flat ground the top level gives the 2D disc. On the Munich demo, J3 denies at 30 m 73 % of M1's
+grid with a 2 m pilot antenna and 13 % with a 10 m mast, against the 2D disc (9 %) at 120 m and
+above: flying low costs the pilot link. About 0.2 to 0.7 s per mission, then cached (a cut
+recomputes nothing; a new threat only its own field). Enemy position margins and masks over
+time come with the 3D masks; `pilot_signal` is the input of the pilot minimum signal.
 
 **Forbidden cells.** Cuts are piecewise constant in time, so `masks.py` precomputes one mask per
 interval between cut boundaries with numpy, not one per time step. A cell is forbidden when it
@@ -646,6 +714,8 @@ Server to client:
   the mission may bring jammers, threats and cuts into its view. The client just replaces its
   state, as on connect. `mission.updated` is followed by a fresh `snapshot` for every client:
   the mission may also leave a view (an operator whose jammer it no longer crosses).
+  `threat.added` and `threat.removed` work like `mission.created`, for the command and every
+  client that sees one of the missions the threat concerns.
 
 **`plan.updated`**
 
@@ -660,7 +730,10 @@ Server to client:
 
 - A route point is the position at time `t`; `action` (`fly`, `hover`, `ground`) holds until
   the next point. Only points where the direction or the action changes are sent; the front
-  interpolates.
+  interpolates. `alt_m` is the height above the ground, `null` while the planner is 2D.
+- `profile`: under the optimised route, every 50 m of flight and at each point: `distance_m`
+  from take-off, `ground_m` (above sea level, 0 without an elevation file) and `alt_m`
+  (height above the ground, interpolated, `null` while unknown). For the altitude profile.
 - `status`: `preview` (uses a cut not confirmed yet, not flyable), `approved` (confirmed cuts
   only), `fallback` (drone late, safe route from its position), `baseline` (no usable cut).
 - Battery figures are consumption in % of `battery_max_s`. `saved_pct` is relative to the
@@ -676,6 +749,7 @@ Server to client:
 | `cut.scheduled`, `cut.confirmed`, `cut.cancelled` | done | the cut (`requested_for`: the mission it was asked for, if any) |
 | `mission.created` | done | the full mission (drone fields from the pilot); a new `snapshot` follows, then a notification to the pilot and the first `plan.updated` |
 | `mission.updated` | done | the mission with its new points and departure; a new `snapshot` follows for every client (plan back to null until the next `plan.updated`) |
+| `threat.added`, `threat.removed` | done | the threat (or its id) and the missions it concerns; a new `snapshot` follows, then notifications to the command and the pilots, then the new `plan.updated` |
 | `mission.status` | done | mission id; `planned`, `flying`, `arrived` |
 | `notification` | done | `to` (callsign), text, optional action (the button to show and the cut it confirms) |
 | `ack`, `error` | done | `req_id`, reason on error |
@@ -695,7 +769,8 @@ Server to client:
 | `mission.launch` | done | mission id |
 | `clock.set` | done | factor and/or paused |
 | `inject.delay` | done | mission id, `delay_s`: hold the flying drone where it is (demo twist) |
-| `inject.enemy_threat` | to come | demo twist |
+| `threat.add` | done | `kind` (`radar`, `jammer`, `avoid`), `pos`; `radius_m` for a radar or a zone to avoid, `eirp_w` and `bands` for a jammer; optional `position_error_m` (not for a zone to avoid) |
+| `threat.remove` | done | threat id (from the file or added) |
 
 **Contract.** `schema/ws.schema.json` is generated from the pydantic models
 (from `backend/`: `uv run corridor-schema > ../schema/ws.schema.json`) and a test fails when it is out of date. Its

@@ -9,13 +9,13 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from corridor.domain.events import PlanMetrics, PlanStatus, RouteAction, RoutePoint
-from corridor.domain.geo import Cell, Grid, LocalFrame, Position
+from corridor.domain.geo import Cell, Grid, Position
 from corridor.domain.planner.astar import Step, earliest_path
-from corridor.domain.planner.masks import TimedMasks, timed_masks
+from corridor.domain.planner.layers import Layers, mission_layers
 from corridor.domain.planner.smooth import smooth_route
 from corridor.domain.scenario import Mission, Scenario
 from corridor.domain.state import Cut
-from corridor.domain.zones import ThreatShape, mission_shapes
+from corridor.domain.zones import ThreatShape, forbidden_shapes
 
 ENTRY_MARGIN_S = 30.0
 """Enter a friendly zone no sooner than this after its cut starts."""
@@ -94,21 +94,16 @@ def plan_route(
     if start is None or goal is None:
         return None
     windows = [w for w in (_usable(c) for c in cuts) if w is not None]
-    zones = mission_shapes(scenario, mission)
+    zones = forbidden_shapes(scenario, mission)
     latest = max([mission.departure_s, *(w.end_s for w in windows)])
-    timed = timed_masks(
-        grid,
-        zones,
-        LocalFrame(mission.launch),
-        windows,
-        mission.departure_s,
-        latest + mission.battery_max_s,
+    layers = mission_layers(
+        scenario, mission, grid, windows, mission.departure_s, latest + mission.battery_max_s
     )
 
     def search(takeoffs: Iterable[float], best: list[RoutePoint] | None) -> list[RoutePoint] | None:
         for takeoff in takeoffs:
             limit_s = flight_s(best) if best else mission.battery_max_s
-            route = _search(grid, mission, timed, start, goal, takeoff, takeoff + limit_s)
+            route = _search(grid, mission, layers, start, goal, takeoff, takeoff + limit_s)
             if route is None or flight_s(route) > mission.battery_max_s:
                 continue
             if best is None or (flight_s(route), route[-1].t) < (flight_s(best), best[-1].t):
@@ -118,7 +113,9 @@ def plan_route(
     def smoothed(route: list[RoutePoint] | None) -> list[RoutePoint] | None:
         if route is None:
             return None
-        return smooth_route(route, grid, timed, mission.cruise_speed_mps)
+        return smooth_route(
+            route, grid, layers.timed, mission.cruise_speed_mps, altitudes=layers.altitudes
+        )
 
     best = search([mission.departure_s], None)
     if not windows:
@@ -139,29 +136,37 @@ def plan_route(
 
 
 def plan_fallback(
-    scenario: Scenario, mission: Mission, grid: Grid, position: Position, now_s: float
+    scenario: Scenario,
+    mission: Mission,
+    grid: Grid,
+    position: Position,
+    now_s: float,
+    level: int = 0,
 ) -> MissionPlan | None:
     """Safe route for a drone already in the air at ``position``: no cut, take off now.
 
     The pilot stays at the launch point, so the zones are those of the mission; only the
-    route starts elsewhere. Used when the drone can no longer keep its cut windows.
+    route starts elsewhere, at flight ``level`` in 3D. Used when the drone can no longer keep
+    its cut windows.
     """
     start, goal = grid.cell_of(position), grid.cell_of(mission.target)
     if start is None or goal is None:
         return None
-    timed = timed_masks(
-        grid,
-        mission_shapes(scenario, mission),
-        LocalFrame(mission.launch),
-        [],
-        now_s,
-        now_s + mission.battery_max_s,
-    )
+    layers = mission_layers(scenario, mission, grid, [], now_s, now_s + mission.battery_max_s)
+    level = min(level, len(layers.timed) - 1)
     airborne = mission.model_copy(update={"launch": position, "departure_s": now_s})
-    route = _search(grid, airborne, timed, start, goal, now_s, now_s + mission.battery_max_s)
+    deadline = now_s + mission.battery_max_s
+    route = _search(grid, airborne, layers, start, goal, now_s, deadline, level)
     if route is None:
         return None
-    route = smooth_route(route, grid, timed, mission.cruise_speed_mps, delay_takeoff=False)
+    route = smooth_route(
+        route,
+        grid,
+        layers.timed,
+        mission.cruise_speed_mps,
+        delay_takeoff=False,
+        altitudes=layers.altitudes,
+    )
     return MissionPlan(
         status="fallback",
         metrics=_metrics(mission, route, route),
@@ -220,57 +225,76 @@ def _steps(first: float, last: float, step: float) -> list[float]:
 def _search(
     grid: Grid,
     mission: Mission,
-    timed: TimedMasks,
+    layers: Layers,
     start: Cell,
     goal: Cell,
     takeoff: float,
     deadline_s: float,
+    start_level: int = 0,
 ) -> list[RoutePoint] | None:
     """Route taking off at ``takeoff``; None if it cannot reach the goal cell by
     ``deadline_s``."""
     speed = mission.cruise_speed_mps
     first_leg_s = math.dist(grid.to_xy(mission.launch), _centre(grid, start)) / speed
     steps = earliest_path(
-        timed, start, goal, takeoff + first_leg_s, grid.cell_m / speed, deadline_s
+        layers.timed,
+        start,
+        goal,
+        takeoff + first_leg_s,
+        grid.cell_m / speed,
+        deadline_s,
+        layers.climb_s,
+        start_level,
     )
     if steps is None:
         return None
     first = steps[0]
-    if first.depart_s > first.arrive_s:
+    if first.depart_s > first.arrive_s and start_level == 0:
         # Hovering over the launch cell: better spent on the ground.
         takeoff += first.depart_s - first.arrive_s
-        steps = [Step(first.cell, first.depart_s, first.depart_s), *steps[1:]]
-    return _route(grid, mission, steps, takeoff)
+        steps = [Step(first.cell, first.depart_s, first.depart_s, first.level), *steps[1:]]
+    return _route(grid, mission, steps, takeoff, layers.altitudes)
 
 
-def _route(grid: Grid, mission: Mission, steps: list[Step], takeoff: float) -> list[RoutePoint]:
-    """Ground wait, launch, the turning and hover points of ``steps``, target."""
+def _route(
+    grid: Grid,
+    mission: Mission,
+    steps: list[Step],
+    takeoff: float,
+    altitudes: tuple[float, ...] | None,
+) -> list[RoutePoint]:
+    """Ground wait, launch, the turning, hover, climb and descent points of ``steps``,
+    target. In 3D each point carries the height of its level (0 on the ground)."""
     launch = grid.to_xy(mission.launch)
-    points: list[tuple[tuple[float, float], float, RouteAction]] = []
+    start_level = steps[0].level
+    points: list[tuple[tuple[float, float], float, RouteAction, int | None]] = []
     if takeoff > mission.departure_s:
-        points.append((launch, mission.departure_s, "ground"))
-    points.append((launch, takeoff, "fly"))
+        points.append((launch, mission.departure_s, "ground", None))
+    points.append((launch, takeoff, "fly", start_level))
     for i, step in enumerate(steps):
         hovers = step.depart_s > step.arrive_s
         ends = i in (0, len(steps) - 1)
-        if not (hovers or ends or _turns(steps[i - 1].cell, step.cell, steps[i + 1].cell)):
+        climbs = not ends and (step.level != steps[i - 1].level or step.level != steps[i + 1].level)
+        turns = not ends and _turns(steps[i - 1].cell, step.cell, steps[i + 1].cell)
+        if not (hovers or ends or climbs or turns):
             continue
         centre = _centre(grid, step.cell)
         if hovers:
-            points.append((centre, step.arrive_s, "hover"))
-            points.append((centre, step.depart_s, "fly"))
+            points.append((centre, step.arrive_s, "hover", step.level))
+            points.append((centre, step.depart_s, "fly", step.level))
         else:
-            points.append((centre, step.arrive_s, "fly"))
+            points.append((centre, step.arrive_s, "fly", step.level))
     target = grid.to_xy(mission.target)
     last = steps[-1]
     leg_s = math.dist(_centre(grid, last.cell), target) / mission.cruise_speed_mps
-    points.append((target, last.arrive_s + leg_s, "fly"))
+    points.append((target, last.arrive_s + leg_s, "fly", last.level))
 
     route: list[RoutePoint] = []
     previous: tuple[tuple[float, float], float] | None = None
-    for xy, t, action in points:
+    for xy, t, action, level in points:
         position = grid.to_position(*xy)
-        point = RoutePoint(lat=position.lat, lon=position.lon, t=t, action=action)
+        alt = None if altitudes is None else 0.0 if level is None else altitudes[level]
+        point = RoutePoint(lat=position.lat, lon=position.lon, t=t, action=action, alt_m=alt)
         if previous == (xy, t):
             route[-1] = point  # launch or target exactly on a cell centre
         else:

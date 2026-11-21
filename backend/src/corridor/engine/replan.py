@@ -4,7 +4,7 @@ A pure Python plan takes up to a couple of seconds; on the event loop it would f
 WebSocket client, and in a thread it would hold the GIL (Python's global interpreter lock).
 The result comes back on the event loop thread, where the engine checks its revision.
 Each mission is planned on its own grid; requests of different missions queue up on the single
-worker.
+worker. Each request carries the scenario as it is then: the command adds and removes threats.
 """
 
 from __future__ import annotations
@@ -28,10 +28,12 @@ PlanDone = Callable[[int, MissionPlan | None], None]
 
 
 class Replanner(Protocol):
-    """Missions come with their grid: they may be created after the replanner."""
+    """Missions come with their grid, and the scenario with its current threats: both may
+    change after the replanner is created."""
 
     def request(
         self,
+        scenario: Scenario,
         mission: Mission,
         grid: Grid,
         revision: int,
@@ -42,13 +44,17 @@ class Replanner(Protocol):
 
     def request_fallback(
         self,
+        scenario: Scenario,
         mission: Mission,
         grid: Grid,
         revision: int,
         position: Position,
         now_s: float,
         done: PlanDone,
-    ) -> None: ...
+        level: int = 0,
+    ) -> None:
+        """``level``: the drone's flight level in 3D."""
+        ...
 
     def close(self) -> None: ...
 
@@ -62,7 +68,8 @@ class ProcessReplanner:
     """
 
     def __init__(self, scenario: Scenario) -> None:
-        self._scenario = scenario
+        """``scenario`` is unused: each request brings the current one."""
+        del scenario
         self._pool = ProcessPoolExecutor(
             max_workers=1, mp_context=multiprocessing.get_context("spawn")
         )
@@ -70,6 +77,7 @@ class ProcessReplanner:
 
     def request(
         self,
+        scenario: Scenario,
         mission: Mission,
         grid: Grid,
         revision: int,
@@ -78,20 +86,22 @@ class ProcessReplanner:
         done: PlanDone,
     ) -> None:
         future = self._pool.submit(
-            plan_mission, self._scenario, mission, grid, cuts, earliest_departure_s
+            plan_mission, scenario, mission, grid, cuts, earliest_departure_s
         )
         self._submit(mission.id, revision, done, future)
 
     def request_fallback(
         self,
+        scenario: Scenario,
         mission: Mission,
         grid: Grid,
         revision: int,
         position: Position,
         now_s: float,
         done: PlanDone,
+        level: int = 0,
     ) -> None:
-        future = self._pool.submit(plan_fallback, self._scenario, mission, grid, position, now_s)
+        future = self._pool.submit(plan_fallback, scenario, mission, grid, position, now_s, level)
         self._submit(mission.id, revision, done, future)
 
     def _submit(

@@ -58,7 +58,7 @@ def xy(points: list[RoutePoint]) -> list[tuple[float, float]]:
 
 
 def cells_of(p: tuple[float, float], q: tuple[float, float]) -> set[Cell]:
-    return {cell for cell, _, _ in _Path(GRID, masks((0, [])), SPEED).touched(p, q)}
+    return {cell for cell, _, _ in _Path(GRID, [masks((0, []))], SPEED).touched(p, q)}
 
 
 def test_staircase_on_open_ground_becomes_one_leg() -> None:

@@ -126,10 +126,11 @@ def test_each_role_sees_its_own_part(two_missions: Scenario) -> None:
 
 
 def test_plans_reach_the_clients(scenario: Scenario) -> None:
-    def inline(scenario: Scenario) -> Replanner:
+    def inline(_: Scenario) -> Replanner:
         class Inline:
             def request(
                 self,
+                scenario: Scenario,
                 mission: Mission,
                 grid: Grid,
                 revision: int,
@@ -141,6 +142,7 @@ def test_plans_reach_the_clients(scenario: Scenario) -> None:
 
             def request_fallback(
                 self,
+                scenario: Scenario,
                 mission: Mission,
                 grid: Grid,
                 revision: int,

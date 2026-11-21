@@ -59,6 +59,7 @@
       ]
     }
   ],
+  "terrain": { "dem": "copernicus_munich.tif" },
   "pilots": [
     {
       "callsign": "PILOT-1",

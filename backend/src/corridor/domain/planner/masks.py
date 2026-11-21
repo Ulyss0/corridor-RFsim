@@ -127,6 +127,32 @@ def _half_diagonal(grid: Grid) -> float:
     return grid.cell_m * math.sqrt(2) / 2
 
 
+def layered_timed_masks(
+    always: npt.NDArray[np.bool_],
+    friendly: dict[str, npt.NDArray[np.bool_]],
+    cuts: Iterable[Cut],
+    start_s: float,
+    end_s: float,
+) -> list[TimedMasks]:
+    """Masks of each flight level, all ``[level, row, col]`` arrays: ``always`` forbidden,
+    plus each friendly jammer's cells unless it is cut. One ``TimedMasks`` per level, with
+    the same time edges."""
+    cuts = list(cuts)
+    inner = sorted({t for c in cuts for t in (c.start_s, c.end_s) if start_s < t < end_s})
+    edges = [start_s, *inner, end_s]
+    segments = []
+    for a, b in itertools.pairwise(edges):
+        middle = (a + b) / 2
+        cut_off = {c.jammer for c in cuts if c.start_s <= middle < c.end_s}
+        mask = always.copy()
+        for jammer, cells in friendly.items():
+            if jammer not in cut_off:
+                mask |= cells
+        segments.append(mask)
+    stack = np.stack(segments)  # (segments, levels, rows, cols)
+    return [TimedMasks(edges=edges, masks=stack[:, level]) for level in range(stack.shape[1])]
+
+
 def timed_masks(
     grid: Grid,
     zones: Iterable[ThreatShape],

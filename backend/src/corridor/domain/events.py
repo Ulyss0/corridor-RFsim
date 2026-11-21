@@ -8,7 +8,7 @@ from pydantic import Field
 
 from corridor.domain.geo import Position
 from corridor.domain.model import Model
-from corridor.domain.scenario import Mission
+from corridor.domain.scenario import EnemyThreat, Mission
 from corridor.domain.state import ClockState, Cut, MissionStatus
 
 
@@ -49,6 +49,23 @@ class MissionUpdated(Model):
     mission: Mission
 
 
+class ThreatAdded(Model):
+    """The command added an enemy threat or a zone to avoid. Clients that see it get a new
+    snapshot right after: zones, grids and scopes may all have changed."""
+
+    type: Literal["threat.added"] = "threat.added"
+    threat: EnemyThreat
+    missions: list[str] = Field(description="Missions it concerns.")
+
+
+class ThreatRemoved(Model):
+    """The command removed a threat. Clients that see it get a new snapshot right after."""
+
+    type: Literal["threat.removed"] = "threat.removed"
+    threat: str
+    missions: list[str] = Field(description="Missions it concerned.")
+
+
 class MissionStatusChanged(Model):
     type: Literal["mission.status"] = "mission.status"
     mission: str
@@ -84,6 +101,18 @@ class RoutePoint(Model):
     lon: float
     t: float
     action: RouteAction
+    alt_m: float | None = Field(
+        default=None,
+        description="Height above the ground, metres; None while the planner is 2D.",
+    )
+
+
+class ProfilePoint(Model):
+    """A sample of the altitude profile under a route."""
+
+    distance_m: float = Field(description="Along the route from take-off.")
+    ground_m: float = Field(description="Ground elevation above sea level; 0 without a map.")
+    alt_m: float | None = Field(description="Drone height above the ground, None if unknown.")
 
 
 class PlanMetrics(Model):
@@ -103,6 +132,9 @@ class PlanUpdated(Model):
     metrics: PlanMetrics
     baseline_route: list[RoutePoint] = Field(description="As if every jammer stayed on.")
     optimised_route: list[RoutePoint]
+    profile: list[ProfilePoint] = Field(
+        default_factory=list, description="Ground and drone height under the optimised route."
+    )
 
 
 class DroneState(Model):
@@ -132,6 +164,8 @@ Event = Annotated[
     | ClockChanged
     | MissionCreated
     | MissionUpdated
+    | ThreatAdded
+    | ThreatRemoved
     | MissionStatusChanged
     | Notification
     | PlanUpdated

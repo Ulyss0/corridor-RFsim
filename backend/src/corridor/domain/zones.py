@@ -51,7 +51,14 @@ from pydantic import Field
 
 from corridor.domain.geo import Grid, LocalFrame, Position
 from corridor.domain.model import Model
-from corridor.domain.scenario import Antenna, EnemyJammer, EnemyRadar, Mission, Scenario
+from corridor.domain.scenario import (
+    Antenna,
+    AvoidZone,
+    EnemyJammer,
+    EnemyRadar,
+    Mission,
+    Scenario,
+)
 
 RING_VERTICES = 64
 """Vertices of a full circle; a directional zone uses as many across its main beam."""
@@ -62,7 +69,7 @@ the jury could rightly ask about."""
 MAX_ZONE_RADIUS_M = 100_000.0
 """Beyond this, k is so close to 1 that the boundary is nearly a straight line."""
 
-ZoneKind = Literal["friendly_jammer", "enemy_jammer", "radar"]
+ZoneKind = Literal["friendly_jammer", "enemy_jammer", "radar", "avoid"]
 ForbiddenSide = Literal["inside", "outside"]
 
 
@@ -224,7 +231,14 @@ def mission_shapes(scenario: Scenario, mission: Mission) -> list[ThreatShape]:
                 zones.append(ThreatShape(threat.id, "enemy_jammer", main))
             case EnemyRadar():
                 zones.append(_radar(threat, frame))
+            case AvoidZone():
+                zones.append(_avoid(threat, frame))
     return zones
+
+
+def forbidden_shapes(scenario: Scenario, mission: Mission) -> list[ThreatShape]:
+    """``mission_shapes`` the planner may not enter: all but the zones to avoid."""
+    return [z for z in mission_shapes(scenario, mission) if z.kind != "avoid"]
 
 
 def mission_constraints(scenario: Scenario, mission: Mission, cell_m: float) -> MissionConstraints:
@@ -290,6 +304,8 @@ def nominal_zones(scenario: Scenario) -> list[Zone]:
                 zones.append(_zone(shape, frame))
             case EnemyRadar():
                 zones.append(_zone(_radar(threat, frame), frame))
+            case AvoidZone():
+                zones.append(_zone(_avoid(threat, frame), frame))
     return zones
 
 
@@ -297,6 +313,12 @@ def _radar(radar: EnemyRadar, frame: LocalFrame) -> ThreatShape:
     x, y = frame.to_xy(radar.pos)
     radius = radar.radius_m + radar.position_error_m
     return ThreatShape(radar.id, "radar", Disc(x=x, y=y, radius_m=radius, forbidden="inside"))
+
+
+def _avoid(zone: AvoidZone, frame: LocalFrame) -> ThreatShape:
+    x, y = frame.to_xy(zone.pos)
+    disc = Disc(x=x, y=y, radius_m=zone.radius_m, forbidden="inside")
+    return ThreatShape(zone.id, "avoid", disc)
 
 
 def _zone(shape: ThreatShape, frame: LocalFrame) -> Zone:

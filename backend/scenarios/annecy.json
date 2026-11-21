@@ -35,6 +35,7 @@
       ]
     }
   ],
+  "terrain": { "dem": "copernicus_annecy.tif" },
   "pilots": [
     {
       "callsign": "PILOT-1",

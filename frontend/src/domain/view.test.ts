@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Cut, Grid, Position, RoutePoint, Zone } from '../api/protocol'
+import type { Cut, Grid, Mission, Position, RoutePoint, Zone } from '../api/protocol'
 import {
   bearingDeg,
   clockLabel,
@@ -8,6 +8,7 @@ import {
   friendlyZoneState,
   gridBounds,
   inForbidden,
+  missionSpan,
   nextClockTime,
   parsePosition,
   positionAt,
@@ -73,11 +74,11 @@ describe('domain/view', () => {
 
   describe('positionAt', () => {
     const route: RoutePoint[] = [
-      { lat: 48.0, lon: 11.0, t: 600, action: 'ground' },
-      { lat: 48.0, lon: 11.0, t: 700, action: 'fly' },
-      { lat: 48.1, lon: 11.0, t: 800, action: 'hover' },
-      { lat: 48.1, lon: 11.0, t: 900, action: 'fly' },
-      { lat: 48.1, lon: 11.1, t: 1000, action: 'hover' },
+      { lat: 48.0, lon: 11.0, t: 600, action: 'ground', alt_m: null },
+      { lat: 48.0, lon: 11.0, t: 700, action: 'fly', alt_m: null },
+      { lat: 48.1, lon: 11.0, t: 800, action: 'hover', alt_m: null },
+      { lat: 48.1, lon: 11.0, t: 900, action: 'fly', alt_m: null },
+      { lat: 48.1, lon: 11.1, t: 1000, action: 'hover', alt_m: null },
     ]
 
     it('returns ground action and launch position before takeoff', () => {
@@ -151,9 +152,9 @@ describe('domain/view', () => {
   describe('routePhases', () => {
     it('splits route into ground and flight phases', () => {
       const route: RoutePoint[] = [
-        { lat: 48.0, lon: 11.0, t: 600, action: 'ground' },
-        { lat: 48.0, lon: 11.0, t: 700, action: 'fly' },
-        { lat: 48.1, lon: 11.0, t: 800, action: 'hover' },
+        { lat: 48.0, lon: 11.0, t: 600, action: 'ground', alt_m: null },
+        { lat: 48.0, lon: 11.0, t: 700, action: 'fly', alt_m: null },
+        { lat: 48.1, lon: 11.0, t: 800, action: 'hover', alt_m: null },
       ]
       const phases = routePhases(route, [])
       expect(phases.length).toBeGreaterThan(0)
@@ -186,5 +187,21 @@ describe('mission request helpers', () => {
     expect(nextClockTime(start, 600, '9:00')).toBe(19 * 3600)
     expect(nextClockTime(start, 600, '25:00')).toBeNull()
     expect(nextClockTime(start, 600, 'soon')).toBeNull()
+  })
+})
+
+describe('missionSpan', () => {
+  const mission = { departure_s: 600, battery_max_s: 1800 } as Mission
+
+  it('spans the planned route', () => {
+    const route: RoutePoint[] = [
+      { lat: 48.0, lon: 11.0, alt_m: 0, t: 650, action: 'ground' },
+      { lat: 48.1, lon: 11.0, alt_m: 120, t: 1400, action: 'hover' },
+    ]
+    expect(missionSpan(mission, route)).toEqual([650, 1400])
+  })
+
+  it('falls back to departure plus full battery without a plan', () => {
+    expect(missionSpan(mission)).toEqual([600, 2400])
   })
 })

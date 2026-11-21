@@ -7,6 +7,9 @@ battery.
 Safety rule: the rest of the route, shifted by the delay, may only be in a friendly jammer zone
 inside a confirmed cut, with the planner's margins. When that no longer holds (drone late, cut
 cancelled), the engine asks for a fallback route from the drone position, using no cut.
+
+In 3D (``LevelCells``) the zones are the planner's cells at the drone's flight level; during a
+climb or a descent, both levels count.
 """
 
 from __future__ import annotations
@@ -15,8 +18,11 @@ import itertools
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import numpy as np
+import numpy.typing as npt
+
 from corridor.domain.events import RouteAction, RoutePoint
-from corridor.domain.geo import LocalFrame, Position
+from corridor.domain.geo import Grid, LocalFrame, Position
 from corridor.domain.planner.plan import ENTRY_MARGIN_S, EXIT_MARGIN_S
 from corridor.domain.state import Cut
 from corridor.domain.zones import ThreatShape
@@ -95,16 +101,49 @@ def takeoff_s(route: Sequence[RoutePoint]) -> float:
     return next((p.t for p in route if p.action != "ground"), route[-1].t)
 
 
+@dataclass(frozen=True)
+class LevelCells:
+    """3D: the cells each friendly jammer forbids at each flight level, on the mission grid
+    (``corridor.domain.planner.layers.forbidden_cells``)."""
+
+    grid: Grid
+    altitudes: tuple[float, ...]
+    by_jammer: dict[str, npt.NDArray[np.bool_]]
+    """``[level, row, col]``."""
+
+    def jammers(self, position: Position, levels: set[int]) -> list[str]:
+        cell = self.grid.cell_of(position)
+        if cell is None or not levels:
+            return []
+        col, row = cell
+        return [
+            j for j, cells in self.by_jammer.items() if any(cells[lv, row, col] for lv in levels)
+        ]
+
+    def levels_at(self, route: Sequence[RoutePoint], t: float) -> set[int]:
+        """Levels of the route points around ``t``: one in level flight, two in a climb."""
+        around = next(((a, b) for a, b in itertools.pairwise(route) if a.t <= t <= b.t), None)
+        points = around or (route[-1],)
+        return {self.altitudes.index(p.alt_m) for p in points if p.alt_m in self.altitudes}
+
+    def level_at(self, route: Sequence[RoutePoint], t: float) -> int:
+        """Level of the last route point at or before ``t`` (the lowest if none)."""
+        before = [p for p in route if p.t <= t and p.alt_m in self.altitudes]
+        return self.altitudes.index(before[-1].alt_m) if before else 0
+
+
 def schedule_violation(
     flight: Flight,
     now: float,
     frame: LocalFrame,
     zones: Sequence[ThreatShape],
     cuts: Sequence[Cut],
+    cells: LevelCells | None = None,
 ) -> str | None:
     """Friendly jammer whose zone the rest of the route would enter outside a confirmed cut.
 
-    ``frame`` is the mission frame (centred on the launch point) the zones are expressed in.
+    ``frame`` is the mission frame (centred on the launch point) the zones are expressed in;
+    with ``cells`` (3D), the zones are those cells instead.
     """
     windows = [
         (c.jammer, c.start_s + ENTRY_MARGIN_S - TOLERANCE_S, c.end_s - EXIT_MARGIN_S + TOLERANCE_S)
@@ -116,13 +155,15 @@ def schedule_violation(
     while t <= end:
         position, action = position_at(flight.route, t)
         if action != "ground":
-            x, y = frame.to_xy(position)
             actual = t + flight.delay_s
-            for zone in friendly:
-                if not zone.contains(x, y):
-                    continue
-                if not any(j == zone.threat and a <= actual <= b for j, a, b in windows):
-                    return zone.threat
+            if cells is not None:
+                inside = cells.jammers(position, cells.levels_at(flight.route, t))
+            else:
+                x, y = frame.to_xy(position)
+                inside = [z.threat for z in friendly if z.contains(x, y)]
+            for jammer in inside:
+                if not any(j == jammer and a <= actual <= b for j, a, b in windows):
+                    return jammer
         t += CHECK_STEP_S
     return None
 

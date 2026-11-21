@@ -41,6 +41,7 @@ class Request:
     cuts: list[Cut]
     earliest_departure_s: float
     done: PlanDone
+    scenario: Scenario
 
 
 @dataclass
@@ -51,6 +52,7 @@ class FakeReplanner:
 
     def request(
         self,
+        scenario: Scenario,
         mission: Mission,
         grid: Grid,
         revision: int,
@@ -58,10 +60,13 @@ class FakeReplanner:
         earliest_departure_s: float,
         done: PlanDone,
     ) -> None:
-        self.requests.append(Request(mission.id, revision, cuts, earliest_departure_s, done))
+        self.requests.append(
+            Request(mission.id, revision, cuts, earliest_departure_s, done, scenario)
+        )
 
     def request_fallback(
         self,
+        scenario: Scenario,
         mission: Mission,
         grid: Grid,
         revision: int,
@@ -203,7 +208,8 @@ def test_process_replanner_runs_the_planner(scenario: Scenario) -> None:
         grid = mission_constraints(scenario, m1, 100).grid
         replanner = ProcessReplanner(scenario)
         try:
-            replanner.request(m1, grid, 7, [], 0.0, lambda r, p: result.set_result((r, p)))
+            done = lambda r, p: result.set_result((r, p))  # noqa: E731
+            replanner.request(scenario, m1, grid, 7, [], 0.0, done)
             return await asyncio.wait_for(result, timeout=30)
         finally:
             replanner.close()

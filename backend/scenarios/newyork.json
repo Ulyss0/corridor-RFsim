@@ -35,6 +35,7 @@
       ]
     }
   ],
+  "terrain": { "dem": "copernicus_newyork.tif" },
   "pilots": [
     {
       "callsign": "PILOT-1",

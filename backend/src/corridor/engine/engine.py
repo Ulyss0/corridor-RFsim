@@ -9,6 +9,11 @@ flight, drone, revision. A mission only reacts to the friendly jammers that conc
 (``MissionConstraints.jammers``). Missions come from the scenario file or from a pilot's
 ``mission.request``; the engine keeps ``scenario.missions`` up to date with both.
 
+Threats: the command adds and removes enemy threats and zones to avoid (``threat.add``,
+``threat.remove``); the engine keeps ``scenario.enemy_threats`` up to date. Each change
+recomputes the zones and grid of every mission, and every mission still ``planned`` that the
+threat concerns gets a new plan. A drone already in the air keeps its route; its pilot is told.
+
 Plans: while a mission is still ``planned``, every change to the cuts of a jammer that
 concerns it requests a new plan with a new revision of that mission. The plan comes back later,
 on the event loop thread; a plan whose revision is not the latest requested is dropped.
@@ -28,11 +33,13 @@ from dataclasses import dataclass
 from typing import assert_never
 
 from corridor.domain.commands import (
+    AddThreat,
     CancelCut,
     Command,
     ConfirmCut,
     InjectDelay,
     LaunchMission,
+    RemoveThreat,
     RequestMission,
     ScheduleCut,
     SetClock,
@@ -52,18 +59,32 @@ from corridor.domain.events import (
     Notification,
     NotificationAction,
     PlanUpdated,
+    ThreatAdded,
+    ThreatRemoved,
 )
 from corridor.domain.geo import LocalFrame
+from corridor.domain.planner.layers import forbidden_cells
 from corridor.domain.planner.plan import MissionPlan
 from corridor.domain.safety import (
     Flight,
+    LevelCells,
     cut_transitions,
     position_at,
     schedule_violation,
     takeoff_s,
 )
-from corridor.domain.scenario import Mission, Scenario
+from corridor.domain.scenario import (
+    THREAT_PREFIX,
+    AvoidZone,
+    EnemyJammer,
+    EnemyRadar,
+    EnemyThreat,
+    Mission,
+    Scenario,
+    Terrain,
+)
 from corridor.domain.state import Cut, WorldState
+from corridor.domain.terrain import profile
 from corridor.domain.zones import (
     MissionConstraints,
     ThreatShape,
@@ -98,6 +119,8 @@ class MissionRuntime:
     frame: LocalFrame
     shapes: list[ThreatShape]
     """Zones of the concerned threats, in ``frame``, for the safety rule."""
+    cells: LevelCells | None = None
+    """3D: the friendly zones per level for the safety rule, instead of ``shapes``."""
     plan: PlanUpdated | None = None
     flight: Flight | None = None
     drone: DroneState | None = None
@@ -132,15 +155,24 @@ class Engine:
         self._mission_ids = itertools.count(1)
         self._last_tick_s = clock.now()
 
-    def _runtime_for(self, mission: Mission) -> MissionRuntime:
-        """Raises ValueError on a degenerate zone (jammer on the launch point)."""
-        concerned = mission_constraints(self.scenario, mission, self._cell_m)
+    def _runtime_for(self, mission: Mission, scenario: Scenario | None = None) -> MissionRuntime:
+        """Zones of ``mission`` in ``scenario`` (default: the current one).
+
+        Raises ValueError on a degenerate zone (jammer on the launch point)."""
+        scenario = scenario or self.scenario
+        concerned = mission_constraints(scenario, mission, self._cell_m)
         ids = {*concerned.jammers, *concerned.threats}
+        cells = None
+        if scenario.terrain.mode == "3d":
+            friendly, _ = forbidden_cells(scenario, mission, concerned.grid)
+            by_jammer = {j: c for j, c in friendly.items() if j in ids}
+            cells = LevelCells(concerned.grid, scenario.terrain.levels_m, by_jammer)
         return MissionRuntime(
             mission=mission,
             constraints=concerned,
             frame=LocalFrame(mission.launch),
-            shapes=[z for z in mission_shapes(self.scenario, mission) if z.threat in ids],
+            shapes=[z for z in mission_shapes(scenario, mission) if z.threat in ids],
+            cells=cells,
         )
 
     def subscribe(self, subscriber: Subscriber) -> None:
@@ -164,6 +196,9 @@ class Engine:
                 self.request_plans([created.id])
             case UpdateMission():
                 self.request_plans([command.mission])
+            case AddThreat() | RemoveThreat():
+                change = next(e for e in events if isinstance(e, ThreatAdded | ThreatRemoved))
+                self.request_plans(change.missions)
         return events
 
     def request_plans(self, mission_ids: Iterable[str] | None = None) -> None:
@@ -180,6 +215,7 @@ class Engine:
             runtime.awaiting = runtime.revision
             cuts = [c for c in self.state.cuts.values() if runtime.concerns(c.jammer)]
             self._replanner.request(
+                self.scenario,
                 runtime.mission,
                 runtime.constraints.grid,
                 runtime.revision,
@@ -198,7 +234,7 @@ class Engine:
                 text = f"{mission.id}: no route to the target within battery."
                 self._publish([Notification(to=mission.pilot_callsign, text=text)])
                 return
-            runtime.plan = _plan_updated(mission.id, revision, plan)
+            runtime.plan = _plan_updated(mission.id, revision, plan, self.scenario.terrain)
             self._publish([runtime.plan])
 
         return done
@@ -252,7 +288,9 @@ class Engine:
         events: list[Event] = []
         if not flight.fallback_requested:
             cuts = list(self.state.cuts.values())
-            zone = schedule_violation(flight, now, runtime.frame, runtime.shapes, cuts)
+            zone = schedule_violation(
+                flight, now, runtime.frame, runtime.shapes, cuts, runtime.cells
+            )
             if zone is not None:
                 flight.fallback_requested = True
                 text = (
@@ -288,14 +326,18 @@ class Engine:
         if self._replanner is None or runtime.flight is None:
             return
         runtime.revision += 1
-        position = position_at(runtime.flight.route, runtime.flight.route_time(now))[0]
+        route_t = runtime.flight.route_time(now)
+        position = position_at(runtime.flight.route, route_t)[0]
+        level = runtime.cells.level_at(runtime.flight.route, route_t) if runtime.cells else 0
         self._replanner.request_fallback(
+            self.scenario,
             runtime.mission,
             runtime.constraints.grid,
             runtime.revision,
             position,
             now,
             self._fallback_done_for(runtime),
+            level=level,
         )
 
     def _fallback_done_for(
@@ -310,7 +352,7 @@ class Engine:
                 self._publish([Notification(to=pilot, text=text)])
                 return
             now = self.clock.now()
-            runtime.plan = _plan_updated(runtime.mission.id, revision, plan)
+            runtime.plan = _plan_updated(runtime.mission.id, revision, plan, self.scenario.terrain)
             runtime.flight = Flight(
                 route=plan.optimised_route,
                 revision=revision,
@@ -346,6 +388,10 @@ class Engine:
                 return self._launch_mission(command)
             case InjectDelay():
                 return self._inject_delay(command)
+            case AddThreat():
+                return self._add_threat(command)
+            case RemoveThreat():
+                return self._remove_threat(command)
             case SetClock():
                 self.clock.set(factor=command.factor, paused=command.paused)
                 return [ClockChanged(clock=self.clock.state())]
@@ -490,13 +536,112 @@ class Engine:
 
     def _next_mission_id(self) -> str:
         """``M<n>``, skipping ids the scenario already uses."""
+        taken = self._taken_ids()
+        return next(i for n in self._mission_ids if (i := f"M{n}") not in taken)
+
+    def _taken_ids(self) -> set[str]:
         scenario = self.scenario
-        taken = {
+        return {
             *(m.id for m in scenario.missions),
             *(j.id for j in scenario.friendly_jammers),
             *(t.id for t in scenario.enemy_threats),
         }
-        return next(i for n in self._mission_ids if (i := f"M{n}") not in taken)
+
+    def _add_threat(self, command: AddThreat) -> list[Event]:
+        self._command_only(command.actor, "add a threat")
+        taken = self._taken_ids()
+        prefix = THREAT_PREFIX[command.kind]
+        threat_id = next(i for n in itertools.count(1) if (i := f"{prefix}{n}") not in taken)
+        threat: EnemyThreat
+        match command.kind:
+            case "radar":
+                assert command.radius_m is not None
+                threat = EnemyRadar(
+                    id=threat_id,
+                    pos=command.pos,
+                    radius_m=command.radius_m,
+                    position_error_m=command.position_error_m,
+                )
+            case "jammer":
+                assert command.eirp_w is not None and command.bands is not None
+                threat = EnemyJammer(
+                    id=threat_id,
+                    pos=command.pos,
+                    eirp_w=command.eirp_w,
+                    bands=command.bands,
+                    position_error_m=command.position_error_m,
+                )
+            case "avoid":
+                assert command.radius_m is not None
+                threat = AvoidZone(id=threat_id, pos=command.pos, radius_m=command.radius_m)
+        self._set_threats([*self.scenario.enemy_threats, threat])
+        missions = self._concerned_by(threat_id)
+        what = {"radar": "radar", "jammer": "enemy jammer", "avoid": "zone to avoid"}
+        text = f"New {what[command.kind]} {threat_id}"
+        return [
+            ThreatAdded(threat=threat, missions=missions),
+            *self._threat_notices(text, missions),
+        ]
+
+    def _remove_threat(self, command: RemoveThreat) -> list[Event]:
+        self._command_only(command.actor, "remove a threat")
+        threats = self.scenario.enemy_threats
+        if not any(t.id == command.threat for t in threats):
+            raise CommandRejected(f"unknown enemy threat {command.threat}")
+        missions = self._concerned_by(command.threat)
+        self._set_threats([t for t in threats if t.id != command.threat])
+        text = f"Threat {command.threat} removed"
+        return [
+            ThreatRemoved(threat=command.threat, missions=missions),
+            *self._threat_notices(text, missions),
+        ]
+
+    def _command_only(self, actor: str, what: str) -> None:
+        if actor != self.scenario.command_callsign:
+            raise CommandRejected(f"only the command can {what}")
+
+    def _set_threats(self, threats: list[EnemyThreat]) -> None:
+        """Swap the enemy threats and recompute the zones of every mission.
+
+        Raises CommandRejected, leaving the state unchanged, on a degenerate zone.
+        """
+        scenario = self.scenario.model_copy(update={"enemy_threats": threats})
+        try:
+            runtimes = {m: self._runtime_for(r.mission, scenario) for m, r in self.missions.items()}
+        except ValueError as exc:
+            raise CommandRejected(f"no zones with this threat: {exc}") from exc
+        self.scenario = scenario
+        for mission_id, fresh in runtimes.items():
+            runtime = self.missions[mission_id]
+            runtime.constraints, runtime.frame, runtime.shapes, runtime.cells = (
+                fresh.constraints,
+                fresh.frame,
+                fresh.shapes,
+                fresh.cells,
+            )
+
+    def _concerned_by(self, threat: str) -> list[str]:
+        return [m for m, r in self.missions.items() if threat in r.constraints.threats]
+
+    def _threat_notices(self, text: str, missions: list[str]) -> list[Event]:
+        """``text`` to the command, with the missions it concerns, and to their pilots."""
+        notices: list[Event] = []
+        replanned = [m for m in missions if self.state.missions[m] == "planned"]
+        flying = [m for m in missions if self.state.missions[m] == "flying"]
+        detail = []
+        if replanned:
+            detail.append(f"replanning {', '.join(replanned)}")
+        if flying:
+            detail.append(f"in flight: {', '.join(flying)}")
+        suffix = f" ({'; '.join(detail)})" if detail else ""
+        notices.append(Notification(to=self.scenario.command_callsign, text=f"{text}{suffix}."))
+        for mission_id in [*replanned, *flying]:
+            mission = self.missions[mission_id].mission
+            then = "new route coming" if mission_id in replanned else "check your route"
+            notices.append(
+                Notification(to=mission.pilot_callsign, text=f"{text} near {mission_id}: {then}.")
+            )
+        return notices
 
     def _launch_mission(self, command: LaunchMission) -> list[Event]:
         """With a planner, the drone flies the current plan, which must be flyable."""
@@ -530,7 +675,9 @@ class Engine:
         return [Notification(to=mission.pilot_callsign, text=text)]
 
 
-def _plan_updated(mission_id: str, revision: int, plan: MissionPlan) -> PlanUpdated:
+def _plan_updated(
+    mission_id: str, revision: int, plan: MissionPlan, terrain: Terrain
+) -> PlanUpdated:
     return PlanUpdated(
         mission=mission_id,
         revision=revision,
@@ -538,4 +685,5 @@ def _plan_updated(mission_id: str, revision: int, plan: MissionPlan) -> PlanUpda
         metrics=plan.metrics,
         baseline_route=plan.baseline_route,
         optimised_route=plan.optimised_route,
+        profile=profile(terrain, plan.optimised_route),
     )

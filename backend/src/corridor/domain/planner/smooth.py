@@ -19,13 +19,16 @@ later than planned:
   open yet), the drone waits where it is until its planned departure, then goes on from the
   planned schedule, which is safe by construction. The take-off delay above then turns that
   wait into ground time when it can. If even waiting is not clear, the route stays as planned.
+
+In 3D, lines are pulled within one flight level, on that level's masks. A climb or descent
+stays as planned, like a hold: the point where it starts keeps its departure time.
 """
 
 from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 
 from corridor.domain.events import RouteAction, RoutePoint
@@ -48,6 +51,9 @@ class _Node:
     xy: XY
     arrive_s: float
     depart_s: float
+    level: int = 0
+    fixed: bool = False
+    """Its departure time cannot move: a hold, or the start of a climb or descent."""
 
     @property
     def holds(self) -> bool:
@@ -57,20 +63,23 @@ class _Node:
 def smooth_route(
     route: list[RoutePoint],
     grid: Grid,
-    timed: TimedMasks,
+    timed: TimedMasks | Sequence[TimedMasks],
     speed_mps: float,
     *,
     delay_takeoff: bool = True,
+    altitudes: Sequence[float] | None = None,
 ) -> list[RoutePoint]:
     """``route`` with the fewest points the masks allow; the same route if nothing is gained.
 
     ``route`` is a planner route: an optional ground wait, the take-off point, then flown
     points, each hover as a ``hover`` point and a ``fly`` point at the same place, the target
-    last. ``delay_takeoff`` is False for a drone already in the air.
+    last. ``delay_takeoff`` is False for a drone already in the air. In 3D, ``timed`` has the
+    masks of each level and ``altitudes`` their heights, which the route points carry.
     """
+    layers = [timed] if isinstance(timed, TimedMasks) else list(timed)
     ground = route[0] if route[0].action == "ground" else None
-    nodes = _nodes(route[1:] if ground else route, grid)
-    path = _Path(grid, timed, speed_mps)
+    nodes = _nodes(route[1:] if ground else route, grid, altitudes)
+    path = _Path(grid, layers, speed_mps)
     smoothed = path.pull(nodes)
     if smoothed is None:
         return route
@@ -79,62 +88,74 @@ def smooth_route(
     if _same(smoothed, nodes):
         return route
     start_s = ground.t if ground else nodes[0].arrive_s
-    return _points(smoothed, grid, start_s)
+    return _points(smoothed, grid, start_s, altitudes)
 
 
 def _same(a: list[_Node], b: list[_Node]) -> bool:
     """Same points, and times within ``EPS_S``: nothing gained, keep the planner's route."""
     return len(a) == len(b) and all(
         m.xy == n.xy
+        and m.level == n.level
         and abs(m.arrive_s - n.arrive_s) < EPS_S
         and abs(m.depart_s - n.depart_s) < EPS_S
         for m, n in zip(a, b, strict=True)
     )
 
 
-def _nodes(points: list[RoutePoint], grid: Grid) -> list[_Node]:
+def _nodes(points: list[RoutePoint], grid: Grid, altitudes: Sequence[float] | None) -> list[_Node]:
+    def level(p: RoutePoint) -> int:
+        return 0 if altitudes is None or p.alt_m is None else list(altitudes).index(p.alt_m)
+
     nodes: list[_Node] = []
     i = 0
     while i < len(points):
         p = points[i]
         xy = grid.to_xy(Position(lat=p.lat, lon=p.lon))
         if p.action == "hover" and i + 1 < len(points):
-            nodes.append(_Node(xy, p.t, points[i + 1].t))
+            nodes.append(_Node(xy, p.t, points[i + 1].t, level(p)))
             i += 2
         else:
-            nodes.append(_Node(xy, p.t, p.t))
+            nodes.append(_Node(xy, p.t, p.t, level(p)))
             i += 1
-    return nodes
+    climbs = {k for k in range(len(nodes) - 1) if nodes[k + 1].level != nodes[k].level}
+    return [replace(n, fixed=n.holds or k in climbs) for k, n in enumerate(nodes)]
 
 
-def _points(nodes: list[_Node], grid: Grid, start_s: float) -> list[RoutePoint]:
+def _points(
+    nodes: list[_Node], grid: Grid, start_s: float, altitudes: Sequence[float] | None
+) -> list[RoutePoint]:
     """Back to route points, with a ground wait from ``start_s`` if the take-off is later."""
 
-    def point(xy: XY, t: float, action: RouteAction) -> RoutePoint:
-        p = grid.to_position(*xy)
-        return RoutePoint(lat=p.lat, lon=p.lon, t=t, action=action)
+    def point(node: _Node, t: float, action: RouteAction, on_ground: bool = False) -> RoutePoint:
+        p = grid.to_position(*node.xy)
+        alt = None if altitudes is None else 0.0 if on_ground else altitudes[node.level]
+        return RoutePoint(lat=p.lat, lon=p.lon, t=t, action=action, alt_m=alt)
 
     launch = nodes[0]
-    points = [point(launch.xy, start_s, "ground")] if launch.depart_s > start_s else []
-    points.append(point(launch.xy, launch.depart_s, "fly"))
+    points = [point(launch, start_s, "ground", True)] if launch.depart_s > start_s else []
+    points.append(point(launch, launch.depart_s, "fly"))
     for node in nodes[1:]:
         if node.holds:
-            points.append(point(node.xy, node.arrive_s, "hover"))
-        points.append(point(node.xy, node.depart_s, "fly"))
+            points.append(point(node, node.arrive_s, "hover"))
+        points.append(point(node, node.depart_s, "fly"))
     return points
 
 
 class _Path:
-    def __init__(self, grid: Grid, timed: TimedMasks, speed_mps: float) -> None:
-        self.grid, self.timed, self.speed = grid, timed, speed_mps
+    def __init__(self, grid: Grid, layers: list[TimedMasks], speed_mps: float) -> None:
+        self.grid, self.layers, self.speed = grid, layers, speed_mps
 
     def pull(self, nodes: list[_Node]) -> list[_Node] | None:
-        """String pulling between holds; None if the route has to stay as planned."""
+        """String pulling between fixed points; None if the route has to stay as planned."""
         out = [nodes[0]]
         i = 0
         while i < len(nodes) - 1:
             here = out[-1]
-            stop = next((k for k in range(i + 1, len(nodes)) if nodes[k].holds), len(nodes) - 1)
+            if nodes[i + 1].level != nodes[i].level:
+                out.append(nodes[i + 1])  # a climb or descent, as planned from a fixed point
+                i += 1
+                continue
+            stop = next((k for k in range(i + 1, len(nodes)) if nodes[k].fixed), len(nodes) - 1)
             reached = next(
                 ((j, n) for j in range(stop, i, -1) if (n := self.reach(here, nodes[j]))), None
             )
@@ -144,10 +165,10 @@ class _Path:
                 continue
             planned = nodes[i].depart_s
             if here.depart_s >= planned or not self.free(
-                self.cell(here.xy), here.arrive_s, planned
+                self.cell(here.xy), here.arrive_s, planned, here.level
             ):
                 return None
-            out[-1] = replace(here, depart_s=planned)  # wait, then follow the plan
+            out[-1] = replace(here, depart_s=planned, fixed=True)  # wait, then follow the plan
         return out
 
     def reach(self, here: _Node, there: _Node) -> _Node | None:
@@ -156,23 +177,26 @@ class _Path:
         A hold keeps its departure time; its cell must stay free until then.
         """
         arrive = here.depart_s + math.dist(here.xy, there.xy) / self.speed
-        if not self.clear(here.xy, there.xy, here.depart_s, arrive):
+        if not self.clear(here.xy, there.xy, here.depart_s, arrive, here.level):
             return None
-        depart = there.depart_s if there.holds else arrive
-        if depart > arrive and not self.free(self.cell(there.xy), arrive, depart):
+        depart = there.depart_s if there.fixed else arrive
+        if depart > arrive and not self.free(self.cell(there.xy), arrive, depart, there.level):
             return None
-        return _Node(there.xy, arrive, depart)
+        return replace(there, arrive_s=arrive, depart_s=depart)
 
     def delay_takeoff(self, nodes: list[_Node]) -> list[_Node]:
         """Take off later, so as to hover less before the first hold, if still clear."""
-        hold = next((k for k, n in enumerate(nodes) if k > 0 and n.holds), None)
+        hold = next((k for k, n in enumerate(nodes) if k > 0 and n.fixed), None)
         if hold is None:
             return nodes
         slack = nodes[hold].depart_s - nodes[hold].arrive_s
+        if slack <= 0:
+            return nodes
         for delay in (slack, slack / 2):
             later = [_shifted(n, delay) for n in nodes[:hold]]
             legs_clear = all(
-                self.clear(a.xy, b.xy, a.depart_s, b.arrive_s) for a, b in itertools.pairwise(later)
+                self.clear(a.xy, b.xy, a.depart_s, b.arrive_s, a.level)
+                for a, b in itertools.pairwise(later)
             )
             reached = self.reach(later[-1], nodes[hold]) if legs_clear else None
             if reached is not None:
@@ -183,17 +207,18 @@ class _Path:
         cs = self.grid.cell_m
         return math.floor(xy[0] / cs), math.floor(xy[1] / cs)
 
-    def free(self, cell: Cell, t1: float, t2: float) -> bool:
-        cols, rows = self.timed.shape
+    def free(self, cell: Cell, t1: float, t2: float, level: int = 0) -> bool:
+        timed = self.layers[level]
+        cols, rows = timed.shape
         if not (0 <= cell[0] < cols and 0 <= cell[1] < rows):
             return False
-        return any(a <= t1 and t2 <= b for a, b in self.timed.safe_intervals(cell))
+        return any(a <= t1 and t2 <= b for a, b in timed.safe_intervals(cell))
 
-    def clear(self, p: XY, q: XY, t1: float, t2: float) -> bool:
-        """True if every cell the segment p -> q touches is free while the drone is in it,
-        flying from ``p`` at ``t1`` to ``q`` at ``t2``."""
+    def clear(self, p: XY, q: XY, t1: float, t2: float, level: int = 0) -> bool:
+        """True if every cell the segment p -> q touches at ``level`` is free while the drone
+        is in it, flying from ``p`` at ``t1`` to ``q`` at ``t2``."""
         for cell, s1, s2 in self.touched(p, q):
-            if not self.free(cell, t1 + s1 * (t2 - t1), t1 + s2 * (t2 - t1)):
+            if not self.free(cell, t1 + s1 * (t2 - t1), t1 + s2 * (t2 - t1), level):
                 return False
         return True
 
