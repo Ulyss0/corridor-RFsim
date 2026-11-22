@@ -22,6 +22,19 @@ def test_demo_scenario_loads(scenario: Scenario) -> None:
     assert isinstance(scenario.enemy_threats[0], EnemyRadar)
 
 
+def test_passage_scenarios_load() -> None:
+    scenario_a = load_scenario(Path("scenarios/demo_passage_a.json"))
+    j3_a = scenario_a.friendly_jammer("J3")
+    assert j3_a is not None
+    assert len(j3_a.cuts) == 0
+
+    scenario_b = load_scenario(Path("scenarios/demo_passage_b.json"))
+    j3_b = scenario_b.friendly_jammer("J3")
+    assert j3_b is not None
+    assert len(j3_b.cuts) == 1
+    assert (j3_b.cuts[0].start_s, j3_b.cuts[0].end_s) == (720, 1200)
+
+
 def test_enemy_radar_threat_loads() -> None:
     data = {
         "start_time": "2026-11-21T14:00:00Z",
