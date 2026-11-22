@@ -1,4 +1,4 @@
-// Default sidebar panel: missions or objects (friendly jammers, enemy threats) in view.
+// Default sidebar panel: missions or objects (friendly jammers, relays, enemy threats) in view.
 import { Badge, Group, Stack, Tabs, Text, UnstyledButton } from '@mantine/core'
 import type { ReactNode } from 'react'
 import { friendlyZoneState, missionOf } from '../../domain/view'
@@ -19,7 +19,8 @@ export function ListView() {
   const setTab = useStore((s) => s.setListTab)
   const missions = useStore((s) => Object.keys(s.missions).length)
   const scenario = useStore((s) => s.snapshot?.scenario)
-  const objects = (scenario?.friendly_jammers.length ?? 0) + (scenario?.enemy_threats.length ?? 0)
+  const objects =
+    (scenario?.friendly_jammers.length ?? 0) + (scenario?.relays.length ?? 0) + (scenario?.enemy_threats.length ?? 0)
 
   return (
     <Tabs value={tab} onChange={(v) => v && setTab(v as typeof tab)}>
@@ -79,7 +80,7 @@ function ObjectList() {
   const now = useLiveSimTime(1)
   if (!scenario) return null
   const cutList = Object.values(cuts)
-  const { friendly_jammers: jammers, enemy_threats: threats } = scenario
+  const { friendly_jammers: jammers, relays, enemy_threats: threats } = scenario
 
   return (
     <Stack gap={2}>
@@ -103,6 +104,18 @@ function ObjectList() {
           </Row>
         )
       })}
+
+      <SectionTitle>Relays</SectionTitle>
+      {relays.length === 0 && <Text size="sm" c="dimmed">None in view.</Text>}
+      {relays.map((r) => (
+        <Row key={r.id} onClick={() => open('relay', r.id)}>
+          <div>
+            <Text size="sm" fw={600}>{r.id}</Text>
+            <Text size="xs" c="dimmed">{r.bands.join(', ')} · {r.eirp_w} W EIRP</Text>
+          </div>
+          <Badge size="sm" color="cyan" variant="light">relay</Badge>
+        </Row>
+      ))}
 
       <SectionTitle>Enemy threats</SectionTitle>
       {threats.length === 0 && <Text size="sm" c="dimmed">None in view.</Text>}

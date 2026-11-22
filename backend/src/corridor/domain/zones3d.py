@@ -31,9 +31,14 @@ Losses are cached per emitter, grid and terrain (``loss_field``): a cut changes 
 threat added or removed only computes what is new. On flat ground with every path clear, the
 zone at a level is the 2D disc, up to the altitude difference.
 
-The pilot's minimum signal: the link is also lost, jammer or not, where the pilot's signal is
+Relays (``Scenario.relays`` on the mission band) are connection points beside the pilot: the
+drone uses the strongest control signal it receives (``link_signal``), so J/S is the minimum
+of the J/S against each connection point. Relay paths use the ``centre`` ground like the pilot's,
+with the relay mast (``Relay.mast_m``).
+
+The minimum signal: the link is also lost, jammer or not, where the best control signal is
 below ``Mission.link_min_dbm`` (``link_lost``): behind a hill or a tower block seen from the
-pilot, or simply too far.
+pilot and every relay, or simply too far from all of them.
 
 Not here: the margin for an enemy jammer's position error and the masks over time (3D masks),
 radars (2D discs for now).
@@ -84,18 +89,23 @@ def jamming_zones(scenario: Scenario, mission: Mission, grid: Grid) -> dict[str,
     (``forbidden``). Jammers far from the grid are computed too; a caller keeps those that
     concern the mission.
     """
-    signal = pilot_signal(scenario, mission, grid)
+    signal = link_signal(scenario, mission, grid)
+    return {j: power - signal for j, power in jammer_powers(scenario, mission, grid).items()}
+
+
+def jammer_powers(scenario: Scenario, mission: Mission, grid: Grid) -> dict[str, Field]:
+    """Power received from each jammer on the mission band, dBm, ``[level, row, col]``."""
     freq = parse_band_to_hz(mission.band)
-    zones: dict[str, Field] = {}
+    powers: dict[str, Field] = {}
     for j in scenario.friendly_jammers:
         if mission.band in j.bands:
             emitter = Emitter(j.pos, j.eirp_w, JAMMER_MAST_M, j.antenna)
-            zones[j.id] = received(scenario.terrain, grid, emitter, freq, "low") - signal
+            powers[j.id] = received(scenario.terrain, grid, emitter, freq, "low")
     for t in scenario.enemy_threats:
         if isinstance(t, EnemyJammer) and mission.band in t.bands:
             emitter = Emitter(t.pos, t.eirp_w, JAMMER_MAST_M)
-            zones[t.id] = received(scenario.terrain, grid, emitter, freq, "low") - signal
-    return zones
+            powers[t.id] = received(scenario.terrain, grid, emitter, freq, "low")
+    return powers
 
 
 def forbidden(scenario: Scenario, js_db: Field) -> npt.NDArray[np.bool_]:
@@ -103,8 +113,26 @@ def forbidden(scenario: Scenario, js_db: Field) -> npt.NDArray[np.bool_]:
 
 
 def link_lost(scenario: Scenario, mission: Mission, grid: Grid) -> npt.NDArray[np.bool_]:
-    """Cells and levels where the pilot's signal is below ``mission.link_min_dbm``."""
-    return pilot_signal(scenario, mission, grid) < mission.link_min_dbm
+    """Cells and levels where the best control signal is below ``mission.link_min_dbm``."""
+    return link_signal(scenario, mission, grid) < mission.link_min_dbm
+
+
+def link_signal(scenario: Scenario, mission: Mission, grid: Grid) -> Field:
+    """Strongest control link power received from the pilot or a relay, dBm."""
+    signals = [s for _, s in source_signals(scenario, mission, grid)]
+    best: Field = functools.reduce(np.maximum, signals)
+    return best
+
+
+def source_signals(scenario: Scenario, mission: Mission, grid: Grid) -> list[tuple[float, Field]]:
+    """Each connection point of the mission, pilot first then the relays on its band: its link
+    EIRP (watts) and the power received from it, dBm, ``[level, row, col]``."""
+    freq = parse_band_to_hz(mission.band)
+    out = [(mission.link_eirp_w, pilot_signal(scenario, mission, grid))]
+    for r in scenario.relays_on(mission.band):
+        relay = Emitter(r.pos, r.eirp_w, r.mast_m)
+        out.append((r.eirp_w, received(scenario.terrain, grid, relay, freq, "centre")))
+    return out
 
 
 def pilot_signal(scenario: Scenario, mission: Mission, grid: Grid) -> Field:

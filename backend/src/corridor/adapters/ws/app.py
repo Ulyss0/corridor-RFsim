@@ -377,6 +377,7 @@ def create_app(
                 current.terrain,
                 current.friendly_jammers,
                 current.enemy_threats,
+                current.relays,
                 current.js_threshold_db,
                 m,
                 grid,

@@ -17,6 +17,11 @@ gives every jammer a mission-independent footprint for the command view (``nomin
 requested at runtime (``mission.request``), the file only holds those known at start. A mission
 in the file names its pilot and takes the drone fields from it (``Pilot.mission``).
 
+``relays`` are friendly relay antennas: each repeats the control link of every drone on its
+``bands``, so the drone is controlled from whichever connection point (its pilot or a relay)
+gives the strongest signal. The relay is assumed always linked to the pilot (backhaul not
+modelled, open decision).
+
 Every callsign has one role: the command post, a pilot or the operator of friendly jammers
 (``Scenario.role_of``).
 """
@@ -80,6 +85,23 @@ class FriendlyJammer(Model):
             if after.start_s < before.end_s:
                 raise ValueError(f"{self.id}: overlapping cuts")
         return self
+
+
+RELAY_MAST_M = 10.0
+"""Default height of a relay antenna above its ground."""
+
+
+class Relay(Model):
+    """Friendly relay antenna: a second connection point for the control link of every drone on
+    its ``bands``. Not jammed itself and always linked to the pilot (backhaul not modelled)."""
+
+    id: str
+    pos: Position
+    eirp_w: float = Field(gt=0, description="EIRP of the relayed control link, watts.")
+    bands: list[str] = Field(min_length=1)
+    mast_m: float = Field(
+        default=RELAY_MAST_M, gt=0, description="Antenna height above the ground, metres (3D)."
+    )
 
 
 class EnemyRadar(Model):
@@ -245,6 +267,9 @@ class Scenario(Model):
     command_callsign: str = Field(description="Callsign of the command post, which sees all.")
     friendly_jammers: list[FriendlyJammer]
     enemy_threats: list[EnemyThreat] = Field(default_factory=list)
+    relays: list[Relay] = Field(
+        default_factory=list, description="Friendly relay antennas extending the control link."
+    )
     terrain: Terrain = Field(default_factory=Terrain)
     pilots: list[Pilot] = Field(min_length=1)
     missions: list[Mission] = Field(
@@ -275,6 +300,7 @@ class Scenario(Model):
             [
                 *(j.id for j in self.friendly_jammers),
                 *(t.id for t in self.enemy_threats),
+                *(r.id for r in self.relays),
                 *(m.id for m in self.missions),
             ],
         )
@@ -303,6 +329,10 @@ class Scenario(Model):
 
     def friendly_jammer(self, jammer_id: str) -> FriendlyJammer | None:
         return next((j for j in self.friendly_jammers if j.id == jammer_id), None)
+
+    def relays_on(self, band: str) -> list[Relay]:
+        """Relays repeating the control link on ``band``."""
+        return [r for r in self.relays if band in r.bands]
 
     def mission(self, mission_id: str) -> Mission | None:
         return next((m for m in self.missions if m.id == mission_id), None)

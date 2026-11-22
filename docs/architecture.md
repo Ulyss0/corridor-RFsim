@@ -153,6 +153,19 @@ Two kinds of data, kept apart:
   error e. A J/S disc grows by e × k / |k - 1| (exact on the side away from the pilot, a little
   generous on the pilot side); a k < 1 bubble shrinks by as much, and server start fails if
   nothing is left. Nominal footprints are centred on the threat, so they grow by e.
+- **Relays** (`relays`, optional): friendly relay antennas (`id`, `pos`, `eirp_w` of the
+  relayed control link, `bands`, `mast_m` default 10 m). A relay is a second connection point
+  for every drone on its bands: the drone uses the strongest control signal, so J/S is the
+  minimum of the J/S against the pilot and against each relay. In 2D a jammer's zone becomes
+  the intersection of its circles of Apollonius against each connection point (drawn as the
+  nearest exit along each ray from the jammer; a relay bubble, k < 1, is left out of the
+  drawing only), and a relay the model cannot draw against is left out for that jammer (the
+  zone only grows). In 3D the best signal over the pilot and the relays feeds both the J/S and
+  the minimum signal, so relays also extend the drone's range; an enemy jammer's position margin
+  is applied per connection point before intersecting. 2D has no minimum signal: there relays
+  only shrink jammer zones. Assumed: a relay is always linked to the pilot and is not jammed
+  itself (open decision). Shown on the map to every role. Not yet: `/api/rf/heatmap` and
+  `/api/rf/probe` still use the pilot alone.
 - Several missions share the jammers, threats and cuts. A mission carries the drone, the pilot
   callsign (the pilot stands at the launch point), speed, battery and earliest departure.
 - **Pilots and missions.** `pilots` lists each pilot callsign with its drone (`id`, `band`,
@@ -918,6 +931,7 @@ The defaults below do not change the layout; they live in the planner or in `saf
 | Battery left for a fallback | `plan_fallback` allows a full `battery_max_s`; the battery already used is not deducted |
 | Replan lead time | 3 wall-clock seconds (`PLAN_LEAD_WALL_S`); two queued plans can exceed it |
 | Pilot minimum signal (41) | `link_min_dbm` per drone, default -100 dBm (quoted sensitivities of drone control receivers run from about -95 to -110 dBm; to set per drone with the team). 3D only: in 2D free space the range at -100 dBm is far past any grid |
+| Relay backhaul | a relay is always linked to the pilot and never jammed itself; its own link to the pilot (radio or wired) is not modelled. Hand-over between connection points is instant |
 | Directional jammers | hard beam edge, sidelobes required (`sidelobe_db`), friendly jammers only, k < 1 rejected, not used in `demo.json` |
 | Route smoothing | greedy string pulling, farthest point first, between the points of the SIPP route only (a better line through the middle of a straight run can be missed); holds kept |
 | Planner choices made in step 3 | SIPP and a 30 s / 5 s takeoff sweep, cuts must save more than 1 s, cells forbidden if any part may touch a zone, radar is a hard ban, margins 30 s / 60 s as constants in `plan.py` |

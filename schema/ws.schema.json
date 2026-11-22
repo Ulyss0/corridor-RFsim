@@ -1594,6 +1594,49 @@
       "title": "ReferenceLink",
       "type": "object"
     },
+    "Relay": {
+      "additionalProperties": false,
+      "description": "Friendly relay antenna: a second connection point for the control link of every drone on\nits ``bands``. Not jammed itself and always linked to the pilot (backhaul not modelled).",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "pos": {
+          "$ref": "#/$defs/Position"
+        },
+        "eirp_w": {
+          "description": "EIRP of the relayed control link, watts.",
+          "exclusiveMinimum": 0,
+          "title": "Eirp W",
+          "type": "number"
+        },
+        "bands": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Bands",
+          "type": "array"
+        },
+        "mast_m": {
+          "default": 10.0,
+          "description": "Antenna height above the ground, metres (3D).",
+          "exclusiveMinimum": 0,
+          "title": "Mast M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "pos",
+        "eirp_w",
+        "bands",
+        "mast_m"
+      ],
+      "title": "Relay",
+      "type": "object"
+    },
     "RemoveThreat": {
       "additionalProperties": false,
       "description": "The command removes an enemy threat or a zone to avoid, from the file or added.",
@@ -2059,6 +2102,14 @@
           "title": "Enemy Threats",
           "type": "array"
         },
+        "relays": {
+          "description": "Friendly relay antennas extending the control link.",
+          "items": {
+            "$ref": "#/$defs/Relay"
+          },
+          "title": "Relays",
+          "type": "array"
+        },
         "terrain": {
           "$ref": "#/$defs/Terrain"
         },
@@ -2086,6 +2137,7 @@
         "command_callsign",
         "friendly_jammers",
         "enemy_threats",
+        "relays",
         "terrain",
         "pilots",
         "missions"

@@ -48,6 +48,7 @@ export const COLORS = {
   preview: '#f08c00',
   fallback: '#fa5252',
   drone: '#ffffff',
+  relay: '#15aabf',
 }
 
 /** Heatmap classes, as the server paints them (``corridor.domain.heatmap``), for the legend. */
@@ -240,6 +241,7 @@ export function createMapView(container: HTMLElement): MapView {
   let visibility: Required<LayerVisibility> = { grid: true, baseline: true, zones: true, rf: true, heatmap: false, relief: true, buildings: true }
   const markers: maplibregl.Marker[] = []
   const threatMarkers = new Map<string, maplibregl.Marker>()
+  const relayMarkers: maplibregl.Marker[] = []
   let friendlyIds = new Set<string>()
   const drones = new Map<string, maplibregl.Marker>()
   const requestMarkers: maplibregl.Marker[] = []
@@ -575,6 +577,9 @@ export function createMapView(container: HTMLElement): MapView {
       friendlyIds = new Set(scenario.friendly_jammers.map((j) => j.id))
       for (const j of scenario.friendly_jammers) threatMarkers.set(j.id, label(map, j.pos, `${j.id} · ${j.operator_callsign}`, COLORS.friendlyOn))
       for (const t of scenario.enemy_threats) threatMarkers.set(t.id, label(map, t.pos, t.id, THREAT_COLOR[t.type]))
+      // Relays are friendly infrastructure: shown to every role, whatever the Zones toggle.
+      relayMarkers.splice(0).forEach((m) => m.remove())
+      for (const r of scenario.relays) relayMarkers.push(label(map, r.pos, `${r.id} · relay`, COLORS.relay))
       renderThreats()
     },
     setRequest({ launch, target, picking }) {

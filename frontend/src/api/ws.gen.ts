@@ -435,6 +435,23 @@ export type EndS3 = number;
 export type Cuts2 = PlannedCut[];
 export type FriendlyJammers = FriendlyJammer[];
 export type EnemyThreats = (EnemyRadar | EnemyJammer | AvoidZone)[];
+export type Id6 = string;
+/**
+ * EIRP of the relayed control link, watts.
+ */
+export type EirpW4 = number;
+/**
+ * @minItems 1
+ */
+export type Bands3 = [string, ...string[]];
+/**
+ * Antenna height above the ground, metres (3D).
+ */
+export type MastM = number;
+/**
+ * Friendly relay antennas extending the control link.
+ */
+export type Relays = Relay[];
 /**
  * Elevation file (GeoTIFF, metres above sea level), a path inside backend/data/. None: flat ground.
  */
@@ -458,7 +475,7 @@ export type Mode = "2d" | "3d";
  */
 export type Pilots = [Pilot, ...Pilot[]];
 export type Callsign1 = string;
-export type Id6 = string;
+export type Id7 = string;
 export type Band1 = string;
 /**
  * EIRP of the pilot's control link, watts.
@@ -1114,6 +1131,7 @@ export interface Scenario {
   command_callsign: CommandCallsign;
   friendly_jammers: FriendlyJammers;
   enemy_threats: EnemyThreats;
+  relays: Relays;
   terrain: Terrain;
   pilots: Pilots;
   missions: Missions2;
@@ -1166,6 +1184,20 @@ export interface PlannedCut {
   end_s: EndS3;
 }
 /**
+ * Friendly relay antenna: a second connection point for the control link of every drone on
+ * its ``bands``. Not jammed itself and always linked to the pilot (backhaul not modelled).
+ *
+ * This interface was referenced by `CorridorWs`'s JSON-Schema
+ * via the `definition` "Relay".
+ */
+export interface Relay {
+  id: Id6;
+  pos: Position1;
+  eirp_w: EirpW4;
+  bands: Bands3;
+  mast_m: MastM;
+}
+/**
  * Ground under the area and flight levels above it (``corridor.domain.terrain``).
  *
  * This interface was referenced by `CorridorWs`'s JSON-Schema
@@ -1190,7 +1222,7 @@ export interface Pilot {
  * via the `definition` "Drone".
  */
 export interface Drone {
-  id: Id6;
+  id: Id7;
   band: Band1;
   link_eirp_w: LinkEirpW1;
   link_min_dbm: LinkMinDbm1;
@@ -1304,6 +1336,7 @@ export interface Scenario1 {
   command_callsign: CommandCallsign;
   friendly_jammers: FriendlyJammers;
   enemy_threats: EnemyThreats;
+  relays: Relays;
   terrain: Terrain;
   pilots: Pilots;
   missions: Missions2;

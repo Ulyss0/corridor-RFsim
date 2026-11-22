@@ -9,13 +9,14 @@ import pytest
 from corridor.domain import terrain, zones3d
 from corridor.domain.geo import Grid, LocalFrame, Position
 from corridor.domain.rf.diffraction import knife_edge_loss_db
-from corridor.domain.scenario import Antenna, Scenario, Terrain
+from corridor.domain.scenario import Antenna, Relay, Scenario, Terrain
 from corridor.domain.zones import mission_constraints, mission_shapes
 from corridor.domain.zones3d import (
     Emitter,
     forbidden,
     jamming_zones,
     link_lost,
+    link_signal,
     loss_field,
     pilot_signal,
     received,
@@ -168,3 +169,37 @@ def test_the_demo_zones_take_well_under_a_second_per_mission(scenario: Scenario)
     # Munich at 30 m: the city shadows a 2 m pilot antenna, the zone is wider than the disc.
     per_level = forbidden(scenario, js["J3"]).sum(axis=(1, 2))
     assert per_level[0] > per_level[-1]
+
+
+def test_a_relay_extends_the_link_and_shrinks_the_jamming(scenario: Scenario) -> None:
+    """The drone takes the strongest control signal: near the relay the link holds where the
+    pilot alone is too weak, and J/S drops by as much as the signal rises."""
+    scenario = scenario.model_copy(update={"terrain": Terrain(mode="3d")})
+    m1 = scenario.missions[0]
+    grid = mission_constraints(scenario, m1, 100).grid
+    pilot_dbm = pilot_signal(scenario, m1, grid)
+    m1 = m1.model_copy(update={"link_min_dbm": float(np.median(pilot_dbm[0]))})
+    far = grid.to_position((grid.cols - 2) * grid.cell_m, (grid.rows - 2) * grid.cell_m)
+    relay = Relay(id="RL1", pos=far, eirp_w=m1.link_eirp_w, bands=[m1.band])
+    relayed = scenario.model_copy(update={"relays": [relay]})
+
+    best = link_signal(relayed, m1, grid)
+    assert (best >= pilot_dbm - 1e-3).all()
+    near = (grid.rows - 2, grid.cols - 2)
+    assert best[0][near] > pilot_dbm[0][near] + 20
+    alone, extended = link_lost(scenario, m1, grid), link_lost(relayed, m1, grid)
+    assert extended.sum() < alone.sum() and not (extended & ~alone).any()
+    assert alone[0][near] and not extended[0][near]
+
+    js_alone, js_relayed = jamming_zones(scenario, m1, grid), jamming_zones(relayed, m1, grid)
+    assert (js_relayed["J3"] <= js_alone["J3"] + 1e-3).all()
+    assert js_relayed["J3"][0][near] < js_alone["J3"][0][near] - 20
+
+
+def test_a_relay_off_the_band_does_not_help(scenario: Scenario) -> None:
+    scenario = scenario.model_copy(update={"terrain": Terrain(mode="3d")})
+    m1 = scenario.missions[0]
+    grid = mission_constraints(scenario, m1, 100).grid
+    relay = Relay(id="RL1", pos=grid.origin, eirp_w=10, bands=["5.8GHz"])
+    relayed = scenario.model_copy(update={"relays": [relay]})
+    assert np.array_equal(link_signal(relayed, m1, grid), pilot_signal(scenario, m1, grid))
