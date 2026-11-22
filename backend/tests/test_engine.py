@@ -38,7 +38,7 @@ def schedule(engine: Engine, start: float = 900, end: float = 1260) -> str:
     return events[0].cut.id
 
 
-def test_schedule_cut_notifies_the_operator(engine: Engine) -> None:
+def test_schedule_cut_asks_the_command(engine: Engine) -> None:
     published: list[Event] = []
     engine.subscribe(published.append)
     events = engine.submit(ScheduleCut(actor=EW, jammer="J3", start_s=900, end_s=1260))
@@ -47,7 +47,7 @@ def test_schedule_cut_notifies_the_operator(engine: Engine) -> None:
     assert isinstance(scheduled, CutScheduled)
     assert scheduled.cut.status == "scheduled"
     assert isinstance(notification, Notification)
-    assert notification.to == "EW-J3"
+    assert notification.to == "CMD"
     assert "14:15:00 to 14:21:00" in notification.text
     assert notification.action is not None
     assert notification.action.cut == scheduled.cut.id
@@ -77,17 +77,20 @@ def test_schedule_cut_in_the_past_is_rejected(scenario: Scenario) -> None:
         engine.submit(ScheduleCut(actor=EW, jammer="J3", start_s=400, end_s=600))
 
 
-def test_only_the_jammer_operator_confirms(engine: Engine) -> None:
+@pytest.mark.parametrize("actor", ["PILOT-1", "EW-J3"])
+def test_only_the_command_confirms(engine: Engine, actor: str) -> None:
     cut_id = schedule(engine)
-    with pytest.raises(CommandRejected, match="only the operator"):
-        engine.submit(ConfirmCut(actor="PILOT-1", cut=cut_id))
+    with pytest.raises(CommandRejected, match="only the command"):
+        engine.submit(ConfirmCut(actor=actor, cut=cut_id))
     assert engine.state.cuts[cut_id].status == "scheduled"
 
-    (event,) = engine.submit(ConfirmCut(actor="EW-J3", cut=cut_id))
+    event, notification = engine.submit(ConfirmCut(actor="CMD", cut=cut_id))
     assert isinstance(event, CutConfirmed)
     assert engine.state.cuts[cut_id].status == "confirmed"
+    assert isinstance(notification, Notification)
+    assert notification.to == "EW-J3"  # the operator carries the cut out
     with pytest.raises(CommandRejected, match="already confirmed"):
-        engine.submit(ConfirmCut(actor="EW-J3", cut=cut_id))
+        engine.submit(ConfirmCut(actor="CMD", cut=cut_id))
 
 
 def test_cancel_cut_tells_the_pilots_concerned(two_missions: Scenario) -> None:
@@ -122,13 +125,14 @@ def test_launch_mission_once(engine: Engine) -> None:
         engine.submit(LaunchMission(actor="PILOT-1", mission="M1"))
 
 
-def test_only_its_pilot_or_the_command_launches_a_mission(two_missions: Scenario) -> None:
+@pytest.mark.parametrize("actor", ["PILOT-1", "CMD"])
+def test_only_its_pilot_launches_a_mission(two_missions: Scenario, actor: str) -> None:
     engine = make_engine(two_missions)
     with pytest.raises(CommandRejected, match="only the pilot of M2"):
-        engine.submit(LaunchMission(actor="PILOT-1", mission="M2"))
+        engine.submit(LaunchMission(actor=actor, mission="M2"))
     with pytest.raises(CommandRejected, match="unknown mission"):
-        engine.submit(LaunchMission(actor="CMD", mission="M9"))
-    engine.submit(LaunchMission(actor="CMD", mission="M2"))
+        engine.submit(LaunchMission(actor="PILOT-2", mission="M9"))
+    engine.submit(LaunchMission(actor="PILOT-2", mission="M2"))
     assert engine.state.missions == {"M1": "planned", "M2": "flying"}
 
 

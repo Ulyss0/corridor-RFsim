@@ -23,14 +23,15 @@ from corridor.domain.events import (
 )
 from corridor.domain.geo import Grid, LocalFrame, Position
 from corridor.domain.planner.plan import plan_fallback, plan_mission
-from corridor.domain.safety import position_at
+from corridor.domain.safety import Flight, position_at, schedule_violation
 from corridor.domain.scenario import Mission, Scenario
 from corridor.domain.state import Cut
+from corridor.domain.zones import mission_constraints, mission_shapes
 from corridor.engine.clock import SimClock
 from corridor.engine.engine import CommandRejected, Engine
 from corridor.engine.replan import PlanDone
 
-PILOT, EW = "PILOT-1", "EW-J3"
+PILOT, EW, COMMAND = "PILOT-1", "EW-J3", "CMD"
 CUT = (900.0, 1380.0)
 """8 min: with the demo powers, J3's zone takes about 300 s to cross, plus 30 s and 60 s."""
 
@@ -101,7 +102,7 @@ class World:
         )[0]
         cut_id: str = scheduled.cut.id  # type: ignore[union-attr]
         if confirm:
-            self.engine.submit(ConfirmCut(actor=EW, cut=cut_id))
+            self.engine.submit(ConfirmCut(actor=COMMAND, cut=cut_id))
         return cut_id
 
 
@@ -248,6 +249,39 @@ def test_3d_late_drone_falls_back_from_its_level(scenario: Scenario) -> None:
     flight = world.m1.flight
     assert flight is not None and flight.route == fallback.optimised_route
     assert fallback.optimised_route[0].alt_m in scenario.terrain.levels_m
+
+
+def test_safety_rule_leaves_a_jammer_the_pilot_flies_through_on_purpose(scenario: Scenario) -> None:
+
+    mission = scenario.missions[0]
+    grid = mission_constraints(scenario, mission, 100).grid
+    j3_cut = Cut(id="c", jammer="J3", start_s=900, end_s=1260, status="confirmed", requested_by="t")
+    planned = plan_mission(scenario, mission, grid, [j3_cut])
+    assert planned is not None
+    route = planned.optimised_route  # straight through J3 during its cut
+    frame, shapes = LocalFrame(mission.launch), mission_shapes(scenario, mission)
+    # Without the cut J3 is on: the rule flags the crossing...
+    assert schedule_violation(Flight(route=route, revision=1), 0, frame, shapes, []) == "J3"
+    # ...unless the pilot chose to fly straight through anyway.
+    on_purpose = Flight(route=route, revision=1, through_jammers=frozenset({"J3"}))
+    assert schedule_violation(on_purpose, 0, frame, shapes, []) is None
+
+
+def test_two_cuts_end_to_end_leave_no_gap_for_the_safety_rule(scenario: Scenario) -> None:
+    """A cut extended by a second one, starting when the first ends: the margins apply to the
+    whole, so a drone crossing at the junction is not flagged."""
+    mission = scenario.missions[0]
+    grid = mission_constraints(scenario, mission, 100).grid
+    whole = Cut(id="w", jammer="J3", start_s=900, end_s=1260, status="confirmed", requested_by="t")
+    planned = plan_mission(scenario, mission, grid, [whole])
+    assert planned is not None
+    route = planned.optimised_route
+    split = [
+        whole.model_copy(update={"id": "a", "end_s": 1000}),
+        whole.model_copy(update={"id": "b", "start_s": 1000}),
+    ]
+    frame, shapes = LocalFrame(mission.launch), mission_shapes(scenario, mission)
+    assert schedule_violation(Flight(route=route, revision=1), 0, frame, shapes, split) is None
 
 
 # --- threat added in flight -----------------------------------------------------------------

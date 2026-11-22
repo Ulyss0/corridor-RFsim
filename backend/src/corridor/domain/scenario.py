@@ -7,7 +7,7 @@ every direction. A jammer only matters to the mission if its ``bands`` contain t
 ``band``. Radars are discs (``radius_m``) and block every band. Enemy positions are estimates:
 ``position_error_m`` widens their zones (``corridor.domain.zones``). Friendly jammers are on
 except during cuts. ``cuts`` in the file are cuts already scheduled at start; they still need
-the operator's confirmation, like any other cut.
+the command's confirmation, like any other cut.
 
 Several missions share the same jammers, threats and cuts. Each mission has its own pilot
 position, so its own zones (``corridor.domain.zones.mission_constraints``). ``reference_link``
@@ -177,6 +177,10 @@ class Mission(Model):
     cruise_speed_mps: float = Field(gt=0)
     battery_max_s: float = Field(gt=0, description="Flight time on a full battery.")
     departure_s: float = Field(ge=0, description="Earliest departure.")
+    cross_radars: bool = Field(
+        default=False,
+        description="The pilot accepts being seen: routes may cross radar zones (never jammers).",
+    )
 
 
 class Terrain(Model):

@@ -1,12 +1,18 @@
 import math
+import struct
+import zlib
 from pathlib import Path
+
+import numpy as np
 
 from corridor.domain.geo import EARTH_RADIUS_M, Position
 from corridor.domain.rf import (
     DEFAULT_CONTOURS,
     HillFeature,
+    JsHeatmap,
     RasterDem,
     SyntheticDem,
+    compute_js_heatmap,
     compute_los,
     compute_polar_coverage,
     compute_terrain_aware_jammer_ring,
@@ -17,6 +23,7 @@ from corridor.domain.rf import (
     free_space_path_loss_db,
     frequency_to_wavelength,
     fresnel_radius,
+    heatmap_png,
     knife_edge_loss_db,
     parse_band_to_hz,
     polar_coverage_to_geojson,
@@ -334,3 +341,39 @@ def test_terrain_aware_jammer_ring_warping() -> None:
     assert len(ring) == 36
     # Coordinates form a valid closed polygon loop
     assert all(-90 <= p.lat <= 90 and -180 <= p.lon <= 180 for p in ring)
+
+
+def test_js_heatmap_raster_jammed_near_jammer_safe_near_pilot() -> None:
+    pilot = Position(lat=48.10, lon=11.50)
+    jammer = Position(lat=48.10, lon=11.60)
+    heatmap = compute_js_heatmap(
+        dem=SyntheticDem(base_elevation_m=500.0),
+        pilot_pos=pilot,
+        pilot_eirp_w=1.0,
+        jammers=[("J1", jammer, 10.0)],
+        band_or_freq_hz="2.4GHz",
+        bounds=(48.08, 11.49, 48.12, 11.61),
+        step_m=100.0,
+    )
+    rows, cols = heatmap.js_db.shape
+    width_m = math.radians(0.12) * EARTH_RADIUS_M * math.cos(math.radians(48.08))
+    assert cols == math.ceil(width_m / 100.0)
+    assert rows == math.ceil(math.radians(0.04) * EARTH_RADIUS_M / 100.0)
+    middle = heatmap.js_db[rows // 2]
+    assert middle[0] < -6.0  # next to the pilot
+    assert middle[-1] >= 6.0  # next to the jammer
+
+
+def test_heatmap_png_has_one_pixel_per_value_colored_by_class() -> None:
+    js = np.array([[-10.0, -6.0, 0.0], [5.9, 6.0, 30.0]])
+    png = heatmap_png(JsHeatmap(js_db=js, west=0.0, south=0.0, east=1.0, north=1.0))
+
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    width, height = struct.unpack(">II", png[16:24])
+    assert (width, height) == (3, 2)
+    idat_len = struct.unpack(">I", png[33:37])[0]
+    raw = zlib.decompress(png[41 : 41 + idat_len])
+    pixels = np.frombuffer(raw, dtype=np.uint8).reshape(2, 1 + 3 * 4)[:, 1:].reshape(2, 3, 4)
+    safe, caution, contention, jammed = (32, 201, 151), (250, 176, 5), (253, 126, 20), (224, 49, 49)
+    assert [tuple(p[:3]) for p in pixels[0]] == [safe, caution, contention]
+    assert [tuple(p[:3]) for p in pixels[1]] == [contention, jammed, jammed]

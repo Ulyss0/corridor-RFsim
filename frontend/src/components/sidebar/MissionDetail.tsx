@@ -3,18 +3,20 @@ import { Alert, Badge, Button, Group, Progress, Stack, Text } from '@mantine/cor
 import { send } from '../../api/client'
 import type { PlanUpdated } from '../../api/protocol'
 import { mockPlan } from '../../dev/mockPlan'
-import { clockLabel, missionOf, routePhases } from '../../domain/view'
+import { choosing, clockLabel, missionOf, routePhases, startsInside } from '../../domain/view'
 import { ROUTE_COLORS } from '../../map/mapView'
 import { useStore } from '../../store'
 import { STATUS_COLOR } from '../colors'
+import { RouteChoices } from '../RouteChoices'
 import { AltitudeProfile } from './AltitudeProfile'
 import { CutRow, PanelHeader, SectionTitle } from './parts'
 
 const PLAN_TEXT: Record<PlanUpdated['status'], { title: string; color: string; detail: string }> = {
   baseline: { title: 'Detour', color: 'gray', detail: 'No usable cut: every friendly jammer is assumed on.' },
-  preview: { title: 'Direct route, awaiting confirmation', color: 'orange', detail: 'Relies on a cut the EW operator has not confirmed. It cannot be flown yet.' },
+  preview: { title: 'Direct route, awaiting confirmation', color: 'orange', detail: 'Relies on a cut the command has not confirmed yet. Launching now flies the detour.' },
   approved: { title: 'Direct route approved', color: 'green', detail: 'The cut is confirmed: ready to launch.' },
   fallback: { title: 'Fallback route', color: 'red', detail: 'The drone could not keep its crossing window: safe route, using no cut.' },
+  straight: { title: 'Straight anyway, jammer on', color: 'orange', detail: 'The command refused the cut: as chosen, the drone flies the direct route through the jammer still on. The control link may be lost while crossing.' },
 }
 
 export function MissionDetail({ id }: { readonly id: string }) {
@@ -36,7 +38,8 @@ export function MissionDetail({ id }: { readonly id: string }) {
   const { status, plan, drone } = view
   const label = (t: number) => clockLabel(start_time, t)
   // The server enforces it too; the button only reflects the rule.
-  const canLaunch = callsign === m.pilot_callsign || callsign === command_callsign
+  // The pilot decides and flies its mission; the command only answers cut requests.
+  const canLaunch = callsign === m.pilot_callsign
 
   const injectMock = () =>
     useStore.getState().apply({
@@ -45,8 +48,12 @@ export function MissionDetail({ id }: { readonly id: string }) {
       payload: mockPlan(m, Object.values(cuts)),
     })
 
+  const picking = choosing(view) && (plan?.choices.length ?? 0) > 0
+  const pending = view.request?.status === 'pending'
+  // Without a detour (the pilot stands in a jamming zone) the drone waits for the answer.
+  const hasDetour = plan?.choices.some((c) => c.kind === 'safe') ?? true
   const crossings = plan ? routePhases(plan.optimised_route, view.constraints.zones).filter((p) => p.kind === 'crossing') : []
-  const compare = plan && (plan.status === 'preview' || plan.status === 'approved')
+  const compare = hasDetour && plan && (plan.status === 'preview' || plan.status === 'approved')
   const text = plan ? PLAN_TEXT[plan.status] : null
   const takeoff = plan?.optimised_route.find((p) => p.action !== 'ground')?.t
   const arrival = plan?.optimised_route.at(-1)?.t
@@ -69,7 +76,19 @@ export function MissionDetail({ id }: { readonly id: string }) {
         {view.constraints.threats.join(', ') || 'none'}
       </Text>
 
-      {plan && text ? (
+      {startsInside(snapshot.nominal_zones, m.launch).map((z) => (
+        <Alert key={z.threat} color="yellow" variant="light" p="xs" mt="sm" title={`Warning: you are in a jamming zone (${z.threat})`}>
+          <Text size="xs">
+            {z.kind === 'friendly_jammer'
+              ? `The drone can only take off once the command has cut ${z.threat}.`
+              : `${z.threat} is an enemy jammer: it is never cut. Move the launch point.`}
+          </Text>
+        </Alert>
+      ))}
+
+      <RouteChoices view={view} mission={m} startTime={start_time} command={command_callsign} />
+
+      {picking ? null : plan && text ? (
         <Stack gap={6} mt="sm">
           <Alert color={text.color} variant="light" p="xs" title={`${text.title} · rev ${plan.revision}`}>
             <Text size="xs">{plan.status === 'approved' && status !== 'planned' ? 'The cut is confirmed: the drone flies this route.' : text.detail}</Text>
@@ -115,21 +134,21 @@ export function MissionDetail({ id }: { readonly id: string }) {
         {canLaunch && (
           <Button
             size="xs"
-            disabled={status !== 'planned' || !plan || plan.status === 'preview'}
-            title={plan?.status === 'preview' ? 'The plan relies on a cut not confirmed yet' : undefined}
+            disabled={status !== 'planned' || !plan || (plan.status === 'preview' && !(pending && hasDetour))}
+            title={
+              pending
+                ? hasDetour
+                  ? 'No answer yet: launching now flies the detour'
+                  : 'No route without a cut: wait for the command'
+                : undefined
+            }
             onClick={() => send({ type: 'mission.launch', mission: m.id })}
           >
             Launch mission
           </Button>
         )}
-        {canLaunch && status === 'planned' && (
-          <Button
-            size="xs"
-            variant="light"
-            onClick={() => useStore.getState().openEdit(m.id, m.launch, m.target)}
-          >
-            Change points
-          </Button>
+        {callsign === m.pilot_callsign && status === 'planned' && (
+          <Text size="xs" c="dimmed">To change the mission, click its route, launch or target on the map.</Text>
         )}
         {status === 'flying' && (
           <Button
@@ -155,14 +174,16 @@ export function MissionDetail({ id }: { readonly id: string }) {
           {missionCuts.map((c) => (
             <CutRow key={c.id} cut={c} showJammer />
           ))}
-          <Button
-            size="xs"
-            variant="light"
-            color="orange"
-            onClick={() => useStore.getState().openCut({ jammer: null, mission: m.id })}
-          >
-            Ask for a cut for {m.id}
-          </Button>
+          {callsign !== command_callsign && (
+            <Button
+              size="xs"
+              variant="light"
+              color="orange"
+              onClick={() => useStore.getState().openCut({ jammer: null, mission: m.id })}
+            >
+              Ask for a cut for {m.id}
+            </Button>
+          )}
         </Stack>
       )}
     </Stack>

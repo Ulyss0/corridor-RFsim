@@ -7,7 +7,6 @@ import { PlusIcon, RadioIcon } from '../Icons'
 import { CutForm } from './CutForm'
 import { ListView } from './ListView'
 import { MissionDetail } from './MissionDetail'
-import { MissionForm } from './MissionForm'
 import { Notifications } from './Notifications'
 import { ObjectDetail } from './ObjectDetail'
 
@@ -34,13 +33,11 @@ export function Sidebar() {
   )
 }
 
-/** A form when one is open, else the panel. A panel whose mission or object left the view
- * falls back to the lists. */
+/** The cut form when open, else the panel. A panel whose mission or object left the view
+ * falls back to the lists. The mission form floats on the map (``MapPanel``). */
 function Body() {
   const panel = useStore((s) => s.panel)
-  const requestOpen = useStore((s) => s.requestDraft.open)
   const cutOpen = useStore((s) => s.cutDraft !== null)
-  if (requestOpen) return <MissionForm />
   if (cutOpen) return <CutForm />
   if (panel.view === 'mission') return <MissionDetail id={panel.id} />
   if (panel.view === 'object') return <ObjectDetail kind={panel.kind} id={panel.id} />
@@ -58,6 +55,8 @@ function ActionBar() {
   if (!snapshot) return null
   const { scenario } = snapshot
   const isPilot = snapshot.viewer.role === 'pilot'
+  // The command only answers cut requests: it does not schedule cuts of its own.
+  const isCommand = snapshot.viewer.role === 'command'
 
   // The pilot stands where its selected (else last) mission took off: a good guess for the next.
   const lastLaunch = () => {
@@ -85,16 +84,18 @@ function ActionBar() {
           New mission
         </Button>
       )}
-      <Button
-        size="xs"
-        color="orange"
-        leftSection={<RadioIcon size={14} />}
-        variant={cutOpen ? 'filled' : 'light'}
-        disabled={scenario.friendly_jammers.length === 0}
-        onClick={() => openCut(cutFrom())}
-      >
-        EW cut
-      </Button>
+      {!isCommand && (
+        <Button
+          size="xs"
+          color="orange"
+          leftSection={<RadioIcon size={14} />}
+          variant={cutOpen ? 'filled' : 'light'}
+          disabled={scenario.friendly_jammers.length === 0}
+          onClick={() => openCut(cutFrom())}
+        >
+          EW cut
+        </Button>
+      )}
     </Group>
   )
 }
