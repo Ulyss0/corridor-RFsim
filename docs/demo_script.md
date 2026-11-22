@@ -66,11 +66,11 @@ La démonstration repose sur un facteur d'accélération d'horloge standard de *
 ```bash
 # Pour le Passage A
 cd backend
-uv run corridor-server scenarios/demo_passage_a.json
+uv run corridor-server --scenario scenarios/demo_passage_a.json
 
 # Pour le Passage B
 cd backend
-uv run corridor-server scenarios/demo_passage_b.json
+uv run corridor-server --scenario scenarios/demo_passage_b.json
 ```
 
 ### Lancer l'interface frontend
