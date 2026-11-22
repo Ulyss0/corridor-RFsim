@@ -32,7 +32,7 @@ def test_passage_scenarios_load() -> None:
     j3_b = scenario_b.friendly_jammer("J3")
     assert j3_b is not None
     assert len(j3_b.cuts) == 1
-    assert (j3_b.cuts[0].start_s, j3_b.cuts[0].end_s) == (900, 1500)
+    assert (j3_b.cuts[0].start_s, j3_b.cuts[0].end_s) == (720, 1200)
 
 
 def test_enemy_radar_threat_loads() -> None:

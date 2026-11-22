@@ -42,20 +42,19 @@ La démonstration repose sur un facteur d'accélération d'horloge standard de *
 ## 3. Passage B : Déconfliction 4D et franchissement synchronisé
 
 ### Contexte tactique
-- **Mission** : Même objectif pour `M1`, mais une coupure planifiée de 10 minutes ($600\text{ s}$) a été programmée sur le brouilleur ami `J3` (de 14:15:00 à 14:25:00, soit $t = 900\text{ s}$ à $1500\text{ s}$).
+- **Mission** : Même objectif pour `M1`, avec une coupure de 8 minutes ($480\text{ s}$) programmée sur le brouilleur ami `J3` (de 14:12:00 à 14:20:00, soit $t = 720\text{ s}$ à $1200\text{ s}$).
 - **Enjeu** : Permettre au drone de traverser en ligne droite la zone habituellement interdite, en synchronisant son passage avec l'extinction du brouilleur.
 
-### Chronogramme minuté (Durée totale : ~2 min 15)
+### Chronogramme minuté (Durée totale : ~2 min)
 
 | Temps réel ($T$) | Temps simulé ($t$) | Rôle / Écran | Actions du démonstrateur | Ce que voit l'auditoire | Points d'insistance jury |
 |---|---|---|---|---|---|
-| **00:00** | $000\text{ s}$<br>14:00:00 | **Pilote** (`PILOT-1`) | 1. Démarrer le serveur avec `demo_passage_b.json`.<br>2. Se connecter sous `PILOT-1`.<br>3. Ouvrir la mission `M1`. | Le panneau affiche deux choix d'itinéraires :<br>1. **Safe (Détour)** : $646\text{ s}$, $36\%$ batterie.<br>2. **Fastest / One cut (Coupure J3)** : $308\text{ s}$, $17\%$ batterie. | "Corridor identifie l'opportunité dans le calendrier EW ami : gain direct de 52% de temps de vol et 19% d'autonomie batterie préservée." |
-| **00:25** | $300\text{ s}$<br>14:05:00 | **Pilote** (`PILOT-1`) | Cliquer sur le choix **Fastest (Coupure J3)**. | La demande passe en statut `pending` (en attente d'approbation commandement/EW). | "Le système ne coupe jamais un brouilleur tout seul. La décision finale reste humaine (*human-in-the-loop*)." |
-| **00:40** | $450\text{ s}$<br>14:07:30 | **Commandement** (`CMD`) | 1. Basculer sur `CMD`.<br>2. Cliquer sur la notification de demande de route pour approuver (`Approuver / Confirmer`). | La route directe devient verte/validée (`accepted`). Les deux rôles sont notifiés de la confirmation. | "La boucle de coordination inter-armes est bouclée en quelques secondes sans passer par des échanges radio flous." |
-| **01:00** | $600\text{ s}$<br>14:10:00 | **Pilote** (`PILOT-1`) | 1. Lancer l'horloge ($\times 20$).<br>2. Cliquer sur **Launch** pour lancer la mission. | Le drone décolle et vole directement vers le centre de la zone de `J3`. | "La trajectoire est calculée pour arriver précisément dans la fenêtre de sécurité : entrée après $t = 930\text{ s}$ (+30s de marge d'extinction)." |
-| **01:15** | $900\text{ s}$<br>14:15:00 | **Tous rôles** | Observer la carte au moment de la coupure. | **La bulle rouge de J3 s'éteint** (devient verte/inactive sur la carte). Le drone traverse le couloir libéré. | "Pendant la coupure, la liaison radio C2 et le flux vidéo du drone restent intègres." |
-| **01:35** | $1208\text{ s}$<br>14:20:08 | **Pilote** (`PILOT-1`) | Observer l'arrivée sur l'objectif. | `M1` passe en statut `arrived`. Batterie restante : $83\%$ (contre $64\%$ avec le détour). | "Le drone a franchi la ligne de front et atteint sa cible deux fois plus vite, avec un potentiel d'action intact." |
-| **01:50** | $1500\text{ s}$<br>14:25:00 | **Tous rôles** | Observer la fin de la fenêtre de coupure. | **J3 se rallume automatiquement** (`jammer.restarted`). La bulle de protection redevient active (rouge). Notification envoyée à l'opérateur EW. | "Zéro oubli : la bulle de défense sol-air de l'unité amie est restaurée automatiquement dès la fin du créneau." |
+| **00:00** | $000\text{ s}$<br>14:00:00 | **Pilote** (`PILOT-1`) | 1. Démarrer le serveur avec `demo_passage_b.json`.<br>2. Se connecter sous `PILOT-1`.<br>3. Ouvrir la mission `M1`. | Le panneau affiche :<br>- Badge orange : **Direct route, awaiting confirmation**.<br>- Comparatif : **Direct route** ($8\text{ min }54\text{ s}$, $29.6\%$ batt.) vs **Detour** ($10\text{ min }46\text{ s}$, $35.9\%$ batt.).<br>- Liste des coupures : `J3 14:12:00–14:20:00 (cut-J3-1, scheduled)`. | "Corridor intègre directement le créneau EW ami : gain de 1 min 53 s (-17%) et 6.3% de batterie sans compromettre la sécurité." |
+| **00:20** | $300\text{ s}$<br>14:05:00 | **Commandement** (`CMD`) / **Opérateur EW** | 1. Basculer sur `CMD` ou `EW-J3`.<br>2. Dans le panneau de détail ou des coupures, cliquer sur **Confirm** pour la coupure de `J3`. | La coupure passe au vert (`confirmed`). Le badge de la mission `M1` devient vert : **Direct route approved**. | "La confirmation inter-armes valide la fenêtre de tir. Le drone est autorisé à franchir." |
+| **00:35** | $600\text{ s}$<br>14:10:00 | **Pilote** (`PILOT-1`) | 1. Revenir sur `PILOT-1`.<br>2. Lancer l'horloge ($\times 20$).<br>3. Cliquer sur **Launch** pour lancer la mission. | Le drone décolle et vole directement vers le centre de la zone de `J3`. | "La trajectoire est calculée pour arriver précisément dans la fenêtre : entrée après $14:12:30$ (+30s de marge de sécurité)." |
+| **00:45** | $720\text{ s}$<br>14:12:00 | **Tous rôles** | Observer la carte au moment de la coupure. | **La bulle rouge de J3 s'éteint** (devient verte/inactive sur la carte). Le drone traverse le couloir libéré. | "Pendant la coupure, la liaison radio C2 et le flux vidéo du drone restent intègres." |
+| **01:10** | $1134\text{ s}$<br>14:18:53 | **Pilote** (`PILOT-1`) | Observer l'arrivée sur l'objectif. | `M1` passe en statut `arrived` à 14:18:53. Batterie consommée : $29.6\%$ (contre $35.9\%$ avec le détour). | "Le drone a franchi la ligne de front et atteint sa cible avec un potentiel d'action intact." |
+| **01:15** | $1200\text{ s}$<br>14:20:00 | **Tous rôles** | Observer la fin de la fenêtre de coupure. | **J3 se rallume automatiquement** (`jammer.restarted`). La bulle de protection redevient active (rouge). Notification envoyée à l'opérateur EW. | "Zéro oubli : la bulle de défense sol-air de l'unité amie est restaurée automatiquement dès la fin du créneau." |
 
 ---
 
@@ -102,7 +101,7 @@ window.__corridor_send?.({
 | Métrique | Passage A (Contournement de repli) | Passage B (Franchissement synchronisé) | Gain opérationnel |
 |---|---|---|---|
 | **Distance totale parcourue** | $9.7\text{ km}$ | $5.4\text{ km}$ | **$-44\%$ de distance** |
-| **Durée du vol** | $646\text{ s}$ ($10\text{ min }46\text{ s}$) | $308\text{ s}$ ($5\text{ min }08\text{ s}$) | **Temps de vol divisé par 2** |
-| **Consommation batterie** | $36\%$ | $17\%$ | **$+19\%$ de réserve utile préservée** |
+| **Durée du vol** | $646\text{ s}$ ($10\text{ min }46\text{ s}$) | $533\text{ s}$ ($8\text{ min }54\text{ s}$) | **$-17\%$ de temps ($-1\text{ min }53\text{ s}$)** |
+| **Consommation batterie** | $35.9\%$ | $29.6\%$ | **$+6.3\%$ de réserve utile préservée** |
 | **Exposition aux menaces sol** | Prolongée ($10\text{ min}$) | Réduite ($5\text{ min}$) | **Vulnérabilité cinétique minimisée** |
 | **Garantie de protection EW amie** | Brouilleur actif en continu | Coupure stricte de $10\text{ min}$ avec rallumage programmé | **Fratricide électromagnétique évité** |
