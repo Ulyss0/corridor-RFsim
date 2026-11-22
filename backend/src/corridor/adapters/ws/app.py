@@ -34,6 +34,7 @@ from corridor.domain.events import (
     Event,
     MissionCreated,
     MissionUpdated,
+    RelaySwitched,
     ThreatAdded,
     ThreatRemoved,
 )
@@ -227,7 +228,7 @@ def create_app(
         def snapshot_for(viewer: Viewer) -> Snapshot:
             return snapshot(engine, audience, viewer)
 
-        if isinstance(event, MissionCreated | ThreatAdded | ThreatRemoved):
+        if isinstance(event, MissionCreated | ThreatAdded | ThreatRemoved | RelaySwitched):
             hub.resync(snapshot_for, lambda viewer: audience.sees(viewer, event))
         elif isinstance(event, MissionUpdated):
             hub.resync(snapshot_for, lambda _: True)

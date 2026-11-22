@@ -113,7 +113,7 @@ function ObjectList() {
             <Text size="sm" fw={600}>{r.id}</Text>
             <Text size="xs" c="dimmed">{r.bands.join(', ')} · {r.eirp_w} W EIRP</Text>
           </div>
-          <Badge size="sm" color="cyan" variant="light">relay</Badge>
+          <Badge size="sm" color={r.on ? 'cyan' : 'gray'}>{r.on ? 'on' : 'off'}</Badge>
         </Row>
       ))}
 

@@ -279,6 +279,7 @@
               "mission.launch": "#/$defs/LaunchMission",
               "mission.request": "#/$defs/RequestMission",
               "mission.update": "#/$defs/UpdateMission",
+              "relay.switch": "#/$defs/SwitchRelay",
               "route.choose": "#/$defs/ChooseRoute",
               "route.decide": "#/$defs/DecideRoute",
               "threat.add": "#/$defs/AddThreat",
@@ -322,6 +323,9 @@
             },
             {
               "$ref": "#/$defs/RemoveThreat"
+            },
+            {
+              "$ref": "#/$defs/SwitchRelay"
             }
           ],
           "title": "Command"
@@ -1625,6 +1629,12 @@
           "exclusiveMinimum": 0,
           "title": "Mast M",
           "type": "number"
+        },
+        "on": {
+          "default": true,
+          "description": "Off, the relay is ignored. The command switches it live (`relay.switch`).",
+          "title": "On",
+          "type": "boolean"
         }
       },
       "required": [
@@ -1632,9 +1642,46 @@
         "pos",
         "eirp_w",
         "bands",
-        "mast_m"
+        "mast_m",
+        "on"
       ],
       "title": "Relay",
+      "type": "object"
+    },
+    "RelaySwitched": {
+      "additionalProperties": false,
+      "description": "The command switched a relay on or off. Every client gets a new snapshot right after:\nzones, grids and scopes may all have changed.",
+      "properties": {
+        "type": {
+          "const": "relay.switched",
+          "default": "relay.switched",
+          "title": "Type",
+          "type": "string"
+        },
+        "relay": {
+          "title": "Relay",
+          "type": "string"
+        },
+        "on": {
+          "title": "On",
+          "type": "boolean"
+        },
+        "missions": {
+          "description": "Missions on its bands.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Missions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "relay",
+        "on",
+        "missions"
+      ],
+      "title": "RelaySwitched",
       "type": "object"
     },
     "RemoveThreat": {
@@ -2222,6 +2269,7 @@
                   "mission.updated": "#/$defs/MissionUpdated",
                   "notification": "#/$defs/Notification",
                   "plan.updated": "#/$defs/PlanUpdated",
+                  "relay.switched": "#/$defs/RelaySwitched",
                   "route.request": "#/$defs/RouteRequested",
                   "threat.added": "#/$defs/ThreatAdded",
                   "threat.removed": "#/$defs/ThreatRemoved"
@@ -2252,6 +2300,9 @@
                 },
                 {
                   "$ref": "#/$defs/ThreatRemoved"
+                },
+                {
+                  "$ref": "#/$defs/RelaySwitched"
                 },
                 {
                   "$ref": "#/$defs/MissionStatusChanged"
@@ -2406,6 +2457,38 @@
         "cuts"
       ],
       "title": "Snapshot",
+      "type": "object"
+    },
+    "SwitchRelay": {
+      "additionalProperties": false,
+      "description": "The command switches a relay on or off; missions on its bands get new routes.",
+      "properties": {
+        "type": {
+          "const": "relay.switch",
+          "default": "relay.switch",
+          "title": "Type",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "relay": {
+          "title": "Relay",
+          "type": "string"
+        },
+        "on": {
+          "title": "On",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "actor",
+        "relay",
+        "on"
+      ],
+      "title": "SwitchRelay",
       "type": "object"
     },
     "Terrain": {

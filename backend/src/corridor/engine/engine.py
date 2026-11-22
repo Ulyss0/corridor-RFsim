@@ -14,6 +14,10 @@ Threats: the command adds and removes enemy threats and zones to avoid (``threat
 recomputes the zones and grid of every mission, and every mission still ``planned`` that the
 threat concerns gets a new plan. A drone already in the air keeps its route; its pilot is told.
 
+Relays: the command switches a relay on or off (``relay.switch``). Same as a threat change, for
+every mission on the relay's bands: zones recomputed, planned missions replanned. A drone in
+the air keeps its route unless the safety rule sees it lose its link (fallback).
+
 Plans: while a mission is still ``planned``, every change to the cuts of a jammer that
 concerns it requests a new plan with a new revision of that mission. The plan comes back later,
 on the event loop thread; a plan whose revision is not the latest requested is dropped.
@@ -45,6 +49,7 @@ from corridor.domain.commands import (
     RequestMission,
     ScheduleCut,
     SetClock,
+    SwitchRelay,
     UpdateMission,
 )
 from corridor.domain.events import (
@@ -61,6 +66,7 @@ from corridor.domain.events import (
     Notification,
     NotificationAction,
     PlanUpdated,
+    RelaySwitched,
     RouteRequest,
     RouteRequested,
     ThreatAdded,
@@ -221,8 +227,10 @@ class Engine:
                 self.request_plans([created.id])
             case UpdateMission():
                 self.request_plans([command.mission])
-            case AddThreat() | RemoveThreat():
-                change = next(e for e in events if isinstance(e, ThreatAdded | ThreatRemoved))
+            case AddThreat() | RemoveThreat() | SwitchRelay():
+                change = next(
+                    e for e in events if isinstance(e, ThreatAdded | ThreatRemoved | RelaySwitched)
+                )
                 self.request_plans(change.missions)
         return events
 
@@ -481,6 +489,8 @@ class Engine:
                 return self._add_threat(command)
             case RemoveThreat():
                 return self._remove_threat(command)
+            case SwitchRelay():
+                return self._switch_relay(command)
             case SetClock():
                 self.clock.set(factor=command.factor, paused=command.paused)
                 return [ClockChanged(clock=self.clock.state())]
@@ -817,6 +827,7 @@ class Engine:
             *(m.id for m in scenario.missions),
             *(j.id for j in scenario.friendly_jammers),
             *(t.id for t in scenario.enemy_threats),
+            *(r.id for r in scenario.relays),
         }
 
     def _add_threat(self, command: AddThreat) -> list[Event]:
@@ -868,20 +879,39 @@ class Engine:
             *self._threat_notices(text, missions),
         ]
 
+    def _switch_relay(self, command: SwitchRelay) -> list[Event]:
+        self._command_only(command.actor, "switch a relay")
+        relay = self.scenario.relay(command.relay)
+        if relay is None:
+            raise CommandRejected(f"unknown relay {command.relay}")
+        if relay.on == command.on:
+            raise CommandRejected(f"relay {relay.id} is already {'on' if relay.on else 'off'}")
+        switched = relay.model_copy(update={"on": command.on})
+        relays = [switched if r.id == relay.id else r for r in self.scenario.relays]
+        self._set_scenario(self.scenario.model_copy(update={"relays": relays}), "relay")
+        missions = [m for m, r in self.missions.items() if r.mission.band in relay.bands]
+        text = f"Relay {relay.id} switched {'on' if command.on else 'off'}"
+        return [
+            RelaySwitched(relay=relay.id, on=command.on, missions=missions),
+            *self._threat_notices(text, missions),
+        ]
+
     def _command_only(self, actor: str, what: str) -> None:
         if actor != self.scenario.command_callsign:
             raise CommandRejected(f"only the command can {what}")
 
     def _set_threats(self, threats: list[EnemyThreat]) -> None:
-        """Swap the enemy threats and recompute the zones of every mission.
+        self._set_scenario(self.scenario.model_copy(update={"enemy_threats": threats}), "threat")
+
+    def _set_scenario(self, scenario: Scenario, change: str) -> None:
+        """Swap the scenario and recompute the zones of every mission.
 
         Raises CommandRejected, leaving the state unchanged, on a degenerate zone.
         """
-        scenario = self.scenario.model_copy(update={"enemy_threats": threats})
         try:
             runtimes = {m: self._runtime_for(r.mission, scenario) for m, r in self.missions.items()}
         except ValueError as exc:
-            raise CommandRejected(f"no zones with this threat: {exc}") from exc
+            raise CommandRejected(f"no zones with this {change}: {exc}") from exc
         self.scenario = scenario
         for mission_id, fresh in runtimes.items():
             runtime = self.missions[mission_id]

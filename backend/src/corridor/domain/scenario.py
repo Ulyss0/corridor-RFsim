@@ -102,6 +102,10 @@ class Relay(Model):
     mast_m: float = Field(
         default=RELAY_MAST_M, gt=0, description="Antenna height above the ground, metres (3D)."
     )
+    on: bool = Field(
+        default=True,
+        description="Off, the relay is ignored. The command switches it live (`relay.switch`).",
+    )
 
 
 class EnemyRadar(Model):
@@ -331,8 +335,11 @@ class Scenario(Model):
         return next((j for j in self.friendly_jammers if j.id == jammer_id), None)
 
     def relays_on(self, band: str) -> list[Relay]:
-        """Relays repeating the control link on ``band``."""
-        return [r for r in self.relays if band in r.bands]
+        """Relays switched on that repeat the control link on ``band``."""
+        return [r for r in self.relays if r.on and band in r.bands]
+
+    def relay(self, relay_id: str) -> Relay | None:
+        return next((r for r in self.relays if r.id == relay_id), None)
 
     def mission(self, mission_id: str) -> Mission | None:
         return next((m for m in self.missions if m.id == mission_id), None)

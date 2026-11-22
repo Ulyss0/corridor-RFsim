@@ -49,6 +49,7 @@ export const COLORS = {
   fallback: '#fa5252',
   drone: '#ffffff',
   relay: '#15aabf',
+  relayOff: '#495057',
 }
 
 /** Heatmap classes, as the server paints them (``corridor.domain.heatmap``), for the legend. */
@@ -579,7 +580,10 @@ export function createMapView(container: HTMLElement): MapView {
       for (const t of scenario.enemy_threats) threatMarkers.set(t.id, label(map, t.pos, t.id, THREAT_COLOR[t.type]))
       // Relays are friendly infrastructure: shown to every role, whatever the Zones toggle.
       relayMarkers.splice(0).forEach((m) => m.remove())
-      for (const r of scenario.relays) relayMarkers.push(label(map, r.pos, `${r.id} · relay`, COLORS.relay))
+      for (const r of scenario.relays) {
+        const text = `${r.id} · relay${r.on ? '' : ' (off)'}`
+        relayMarkers.push(label(map, r.pos, text, r.on ? COLORS.relay : COLORS.relayOff))
+      }
       renderThreats()
     },
     setRequest({ launch, target, picking }) {

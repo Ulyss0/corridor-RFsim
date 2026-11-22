@@ -252,6 +252,7 @@ export const useStore = create<State>((set, get) => ({
       }
       case 'threat.added':
       case 'threat.removed':
+      case 'relay.switched':
         // A new snapshot follows with the zones, grids and threats in view; the
         // notification reaches the feed.
         set(clockSync)

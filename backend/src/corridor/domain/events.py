@@ -66,6 +66,16 @@ class ThreatRemoved(Model):
     missions: list[str] = Field(description="Missions it concerned.")
 
 
+class RelaySwitched(Model):
+    """The command switched a relay on or off. Every client gets a new snapshot right after:
+    zones, grids and scopes may all have changed."""
+
+    type: Literal["relay.switched"] = "relay.switched"
+    relay: str
+    on: bool
+    missions: list[str] = Field(description="Missions on its bands.")
+
+
 class MissionStatusChanged(Model):
     type: Literal["mission.status"] = "mission.status"
     mission: str
@@ -288,6 +298,7 @@ Event = Annotated[
     | MissionUpdated
     | ThreatAdded
     | ThreatRemoved
+    | RelaySwitched
     | MissionStatusChanged
     | Notification
     | PlanUpdated

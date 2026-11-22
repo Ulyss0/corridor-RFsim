@@ -1,6 +1,7 @@
 // One object in detail: a friendly jammer (its cuts, the missions it concerns), a relay or an
 // enemy threat.
-import { Badge, Button, Stack, Text, UnstyledButton } from '@mantine/core'
+import { Badge, Button, Stack, Switch, Text, UnstyledButton } from '@mantine/core'
+import { send } from '../../api/client'
 import { formatPosition, friendlyZoneState } from '../../domain/view'
 import { useLiveSimTime } from '../../hooks/useSimNow'
 import { type ObjectKind, useStore } from '../../store'
@@ -81,12 +82,26 @@ function JammerDetail({ id }: { readonly id: string }) {
 function RelayDetail({ id }: { readonly id: string }) {
   const scenario = useStore((s) => s.snapshot?.scenario)
   const openList = useStore((s) => s.openList)
+  const isCommand = useStore((s) => s.snapshot?.viewer.role === 'command')
   const relay = scenario?.relays.find((r) => r.id === id)
   if (!relay) return <Gone onBack={openList} />
 
   return (
     <Stack gap="xs">
-      <PanelHeader title={`Relay ${id}`} badge={<Badge color="cyan">relay</Badge>} onBack={openList} />
+      <PanelHeader
+        title={`Relay ${id}`}
+        badge={<Badge color={relay.on ? 'cyan' : 'gray'}>{relay.on ? 'on' : 'off'}</Badge>}
+        onBack={openList}
+      />
+      {isCommand && (
+        <Switch
+          size="sm"
+          color="cyan"
+          checked={relay.on}
+          label={relay.on ? 'Relaying: switch off to replan without it' : 'Off: switch on to replan with it'}
+          onChange={(e) => send({ type: 'relay.switch', relay: id, on: e.currentTarget.checked })}
+        />
+      )}
       <Text size="xs" c="dimmed">
         {relay.bands.join(', ')} · {relay.eirp_w} W EIRP · mast {relay.mast_m} m
       </Text>
