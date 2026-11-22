@@ -38,6 +38,8 @@ export function ExportCard() {
   const { plan } = view
   const pilot = mission.pilot_callsign
   const ready = !!plan && plan.status !== 'preview'
+  // A 3D plan carries its own altitudes: the server exports them, the field below is unused.
+  const altitudesFromPlan = !!plan && plan.optimised_route.some((p) => p.amsl_m != null)
   const query = `mission_id=${encodeURIComponent(mission.id)}&altitude_m=${altitude}`
   // A result only describes the mission it was sent for.
   const shown = result?.mission === mission.id ? result : null
@@ -67,14 +69,18 @@ export function ExportCard() {
         {plan && <Badge variant="light">rev {plan.revision}</Badge>}
       </Group>
       <Stack gap="xs">
-        <NumberInput
-          size="xs"
-          label="Altitude above launch (m)"
-          min={1}
-          max={1000}
-          value={altitude}
-          onChange={(v) => setAltitude(typeof v === 'number' && v > 0 ? v : DEFAULT_ALTITUDE_M)}
-        />
+        {altitudesFromPlan ? (
+          <Text size="xs" c="dimmed">Altitudes from the 3D plan, per waypoint, above launch.</Text>
+        ) : (
+          <NumberInput
+            size="xs"
+            label="Altitude above launch (m)"
+            min={1}
+            max={1000}
+            value={altitude}
+            onChange={(v) => setAltitude(typeof v === 'number' && v > 0 ? v : DEFAULT_ALTITUDE_M)}
+          />
+        )}
         <Button size="xs" disabled={!ready} loading={busy} onClick={sendToAtak} title={ready ? undefined : 'Only a flyable plan is exported'}>
           Send to {pilot} on ATAK
         </Button>

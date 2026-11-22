@@ -963,7 +963,7 @@ The defaults below do not change the layout; they live in the planner or in `saf
 | Replan lead time | 3 wall-clock seconds (`PLAN_LEAD_WALL_S`); two queued plans can exceed it |
 | Pilot minimum signal (41) | `link_min_dbm` per drone, default -100 dBm (quoted sensitivities of drone control receivers run from about -95 to -110 dBm; to set per drone with the team). 3D only: in 2D free space the range at -100 dBm is far past any grid |
 | Relay backhaul | a relay is always linked to the pilot and never jammed itself; its own link to the pilot (radio or wired) is not modelled. Hand-over between connection points is instant |
-| Export altitude | one value for the whole route (default 100 m above launch), even when the 3D planner picked flight levels |
+| Export altitude | 3D plan: each waypoint's own, above the ground at launch; 2D plan: one value for the whole route (default 100 m above launch) |
 | Export waypoints | every turn of the grid route (about 20 on the demo detour); no simplification, a shortcut could clip a zone |
 | ATAK delivery | on demand (`POST /api/export/atak?mission_id=...`); not tied to an approval step yet; same route uid per mission, so a resend replaces the route on the phone |
 | Latest take-off | 5 s steps up to 15 min with the safety rule (margins and 2 s tolerance); none when the route relies on no cut |

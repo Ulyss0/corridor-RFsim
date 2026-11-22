@@ -2,9 +2,10 @@
 
 Every exporter (ATAK, INAV, ArduPilot) reads this, never the planner output directly.
 
-The planner works in 2D, on one altitude layer: every waypoint gets the export altitude,
-in metres above the launch point. ``Waypoint.alt_m`` exists per waypoint so a 3D planner
-can fill it later without touching the exporters.
+Altitudes are in metres above the launch point (the flight controller's home). A 3D plan
+gives each point its altitude above sea level (``RoutePoint.amsl_m``): each waypoint gets that
+altitude minus the ground at the launch point, so it can be negative where the route flies
+below the launch point. A 2D plan has no altitude: every waypoint gets the export altitude.
 
 Times are simulated seconds, like the rest of the domain. ``FlightRoute.label`` turns them
 into wall-clock text. A "not before" time (take-off, leaving a hold) is rounded up, so
@@ -18,7 +19,7 @@ planner's margins (checked with the flight safety rule).
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
@@ -28,6 +29,7 @@ from corridor.domain.geo import LocalFrame, Position
 from corridor.domain.safety import Flight, schedule_violation
 from corridor.domain.scenario import Mission, Scenario
 from corridor.domain.state import Cut
+from corridor.domain.terrain import ground_model
 from corridor.domain.zones import mission_shapes
 
 DEFAULT_ALTITUDE_M = 100.0
@@ -76,11 +78,14 @@ class FlightRoute:
     airborne: bool
     """The drone is already flying (fallback route): no take-off item."""
     altitude_m: float
+    """The export altitude: every waypoint's altitude, unless ``altitude_from_plan``."""
     cruise_speed_mps: float
     waypoints: tuple[Waypoint, ...]
     status: PlanStatus | None = None
     revision: int | None = None
     battery_used_pct: float | None = None
+    altitude_from_plan: bool = False
+    """3D plan: each waypoint has the plan's altitude, ``altitude_m`` is unused."""
 
     @property
     def arrival_s(self) -> float:
@@ -137,6 +142,10 @@ def flight_route(
 
     ``cuts``: the cuts the route was planned on, to compute the latest take-off.
 
+    ``altitude_m``: every waypoint's altitude above launch, used only when the route has no
+    altitude of its own (2D plan). With one (``amsl_m`` on every flown point), each waypoint
+    gets it minus the ground at the launch point.
+
     The planner writes a hover as two points at the same place: the arrival (``hover``) and
     the departure (``fly``). The last point is the target.
     """
@@ -147,7 +156,20 @@ def flight_route(
     if first is None or first == len(points) - 1:
         raise ValueError("a route needs a take-off point and at least one more point")
     start = points[first]
-    waypoints = _waypoints(LocalFrame(mission.launch), points, first, altitude_m)
+    from_plan = all(p.amsl_m is not None for p in points[first:])
+    if from_plan:
+        launch_amsl = ground_model(scenario.terrain).get_elevation(mission.launch)
+
+        def height(p: RoutePoint) -> float:
+            assert p.amsl_m is not None
+            return round(p.amsl_m - launch_amsl, 1)
+
+    else:
+
+        def height(p: RoutePoint) -> float:
+            return altitude_m
+
+    waypoints = _waypoints(LocalFrame(mission.launch), points, first, height)
     return FlightRoute(
         mission_id=mission.id,
         drone_id=mission.drone_id,
@@ -164,11 +186,15 @@ def flight_route(
         status=status,
         revision=revision,
         battery_used_pct=battery_used_pct,
+        altitude_from_plan=from_plan,
     )
 
 
 def _waypoints(
-    frame: LocalFrame, points: list[RoutePoint], first: int, altitude_m: float
+    frame: LocalFrame,
+    points: list[RoutePoint],
+    first: int,
+    height: Callable[[RoutePoint], float],
 ) -> list[Waypoint]:
     """Waypoints after the take-off point ``points[first]``, each hover pair merged."""
     waypoints: list[Waypoint] = []
@@ -189,7 +215,7 @@ def _waypoints(
                 number=len(waypoints) + 1,
                 lat=here.lat,
                 lon=here.lon,
-                alt_m=altitude_m,
+                alt_m=height(here),
                 arrive_s=here.t,
                 depart_s=depart,
                 kind=kind,
@@ -219,7 +245,14 @@ def briefing(route: FlightRoute) -> list[str]:
         lines = [head, f"New route from {start} at {route.label(route.takeoff_s)}"]
     else:
         lines = [head, f"T/O {takeoff_window(route)} from {start}"]
-    lines.append(f"Alt {route.altitude_m:.0f} m above launch, {route.cruise_speed_mps:.0f} m/s")
+    speed = f"{route.cruise_speed_mps:.0f} m/s"
+    if route.altitude_from_plan:
+        alts = [wp.alt_m for wp in route.waypoints]
+        lines.append(
+            f"Alt per waypoint, {min(alts):.0f} to {max(alts):.0f} m above launch, {speed}"
+        )
+    else:
+        lines.append(f"Alt {route.altitude_m:.0f} m above launch, {speed}")
     for wp in route.waypoints:
         if wp.kind == "hold":
             lines.append(

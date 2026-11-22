@@ -12,8 +12,10 @@ destinations. Only a flyable plan is exported: a `preview` plan relies on cuts n
 - Need to know: the pilot gets the route and its times, never a zone or a jammer.
 - Take-off window: when the route crosses a friendly jammer during a cut, a late take-off is as
   unsafe as an early one. The latest take-off comes from the flight safety rule (cut margins kept).
-- Altitude: every waypoint gets the one export altitude (default 100 m above launch), even
-  when the 3D planner picked flight levels. `Waypoint.alt_m` is per waypoint, ready for them.
+- Altitude, above the launch point (the flight controller's home): a 3D plan gives each
+  waypoint its own (its altitude above sea level minus the ground at launch; negative where the
+  route flies below the launch point). A 2D plan has none: every waypoint gets the export
+  altitude (`altitude_m`, default 100 m), which a 3D plan ignores.
 - Both firmwares navigate on GNSS: no use if friendly jamming covers GNSS bands.
 - ArduPilot's `NAV_DELAY` needs GPS time and is reported to overrun by up to about a minute: test
   on the target vehicle.

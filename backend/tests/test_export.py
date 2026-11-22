@@ -17,8 +17,9 @@ from corridor.domain.events import RouteAction, RoutePoint
 from corridor.domain.geo import Grid, LocalFrame, Position
 from corridor.domain.planner.plan import plan_fallback, plan_mission
 from corridor.domain.safety import Flight, schedule_violation
-from corridor.domain.scenario import Mission, Scenario
+from corridor.domain.scenario import Mission, Scenario, load_scenario
 from corridor.domain.state import Cut
+from corridor.domain.terrain import ground_model, with_altitude
 from corridor.domain.zones import mission_constraints, mission_shapes
 from corridor.engine.replan import PlanDone
 from corridor.export.atak import TakTarget, chat_cot, delete_cot, route_cot, sender_identity
@@ -369,3 +370,49 @@ def test_http_reports_an_unreachable_ots(scenario: Scenario) -> None:
     app = create_app(scenario, clock_factor=20, cell_m=100, replanner=SyncReplanner, tak=tak)
     with TestClient(app) as client:
         assert client.post("/api/export/atak", params=M1).status_code == 502
+
+
+# --- 3D altitudes ------------------------------------------------------------------------------
+
+
+def _with_heights(scenario: Scenario, heights: list[float]) -> list[RoutePoint]:
+    """``_points`` at these heights above the ground at launch, as a 3D plan gives them."""
+    ground = ground_model(scenario.terrain).get_elevation(m1(scenario).launch)
+    return [
+        p.model_copy(update={"alt_m": h, "amsl_m": ground + h})
+        for p, h in zip(_points(scenario), heights, strict=True)
+    ]
+
+
+def test_3d_plan_altitudes_become_heights_above_launch(scenario: Scenario) -> None:
+    points = _with_heights(scenario, [0, 0, 0, 60, 120, 120, 30])
+    route = flight_route(scenario, m1(scenario), points, 100)
+    assert route.altitude_from_plan
+    assert [wp.alt_m for wp in route.waypoints] == [60, 120, 30]
+    assert "Alt per waypoint, 30 to 120 m above launch" in "\n".join(briefing(route))
+    rows = _rows(ardupilot_waypoints(route))
+    assert float(rows[3][10]) == 60  # take-off to the first waypoint's height
+
+
+def test_2d_plan_keeps_the_export_altitude(scenario: Scenario) -> None:
+    route = flight_route(scenario, m1(scenario), _points(scenario), 80)
+    assert not route.altitude_from_plan
+    assert {wp.alt_m for wp in route.waypoints} == {80}
+
+
+def test_3d_heights_are_relative_to_the_ground_at_launch() -> None:
+    hilly = load_scenario(Path(__file__).parent.parent / "scenarios" / "demo3d.json")
+    mission = hilly.missions[0]
+    grid = mission_constraints(hilly, mission, 200).grid
+    plan = plan_mission(hilly, mission, grid, [])
+    assert plan is not None
+    points = with_altitude(hilly.terrain, grid, plan.optimised_route)
+    route = flight_route(hilly, mission, points)
+    assert route.altitude_from_plan
+    launch = ground_model(hilly.terrain).get_elevation(mission.launch)
+    assert launch > 0  # Munich: the heights differ from the altitudes above sea level
+    by_place = {(p.lat, p.lon, p.t): p.amsl_m for p in points}
+    for wp in route.waypoints:
+        amsl = by_place[(wp.lat, wp.lon, wp.arrive_s)]
+        assert amsl is not None
+        assert wp.alt_m == round(amsl - launch, 1)

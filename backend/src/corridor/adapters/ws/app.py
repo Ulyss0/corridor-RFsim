@@ -17,8 +17,8 @@ GET  /api/export/ardupilot  ArduPilot mission (QGC WPL 110)
 GET  /api/export/briefing   the pilot's briefing, plain text
 POST /api/export/atak       send the route to the pilot's ATAK through OpenTAKServer
 
-Every export takes ``altitude_m`` (above launch) and refuses a ``preview`` plan: it relies
-on cuts nobody confirmed.
+Every export takes ``altitude_m`` (above launch; a 3D plan has its own altitudes and ignores
+it) and refuses a ``preview`` plan: it relies on cuts nobody confirmed.
 """
 
 from __future__ import annotations
