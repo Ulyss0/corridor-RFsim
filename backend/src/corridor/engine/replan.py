@@ -128,3 +128,42 @@ class ProcessReplanner:
     def close(self) -> None:
         """Drop pending plans, wait for the running one (a couple of seconds at most)."""
         self._pool.shutdown(wait=True, cancel_futures=True)
+
+
+class InlineReplanner:
+    """Plans at once, in the calling thread: ``done`` is called before ``request`` returns.
+
+    For headless runs (``corridor.sim``) and tests, where nothing else waits on the thread.
+    """
+
+    def __init__(self, scenario: Scenario) -> None:
+        """``scenario`` is unused: each request brings the current one."""
+        del scenario
+
+    def request(
+        self,
+        scenario: Scenario,
+        mission: Mission,
+        grid: Grid,
+        revision: int,
+        cuts: list[Cut],
+        earliest_departure_s: float,
+        done: PlanDone,
+    ) -> None:
+        done(revision, plan_mission(scenario, mission, grid, cuts, earliest_departure_s))
+
+    def request_fallback(
+        self,
+        scenario: Scenario,
+        mission: Mission,
+        grid: Grid,
+        revision: int,
+        position: Position,
+        now_s: float,
+        done: PlanDone,
+        level: int = 0,
+    ) -> None:
+        done(revision, plan_fallback(scenario, mission, grid, position, now_s, level))
+
+    def close(self) -> None:
+        """Nothing runs in the background."""

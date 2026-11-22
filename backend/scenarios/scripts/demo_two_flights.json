@@ -1,0 +1,8 @@
+{
+  "commands": [
+    {"at_s": 0, "command": {"type": "cut.schedule", "actor": "PILOT-1", "jammer": "J3", "start_s": 900, "end_s": 1380}},
+    {"at_s": 30, "command": {"type": "cut.confirm", "actor": "CMD", "cut": "cut-1"}},
+    {"at_s": 60, "command": {"type": "mission.launch", "actor": "PILOT-1", "mission": "M1"}},
+    {"at_s": 60, "command": {"type": "mission.launch", "actor": "PILOT-2", "mission": "M2"}}
+  ]
+}

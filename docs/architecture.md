@@ -76,6 +76,11 @@ backend/src/corridor/
     atak.py       ATAK route (b-m-r) and GeoChat DM addressed to the pilot, delete, deliver()
     cli.py        corridor-export: plan offline, write the files, send to / revoke on ATAK
   tak/            CoT client and encoders (shapes, markers, GeoChat, delete), corridor-tak CLI
+  sim/
+    script.py     command script: the human actions of a run, at simulated times
+    runner.py     run(): scenario + script through the engine, no server, plans inline
+    log.py        run log, JSON Lines: run, event, rejected, end
+    cli.py        corridor-run: run, summary
 backend/scenarios/demo.json   demo scenario: M1 (J3 between pilot and target, radar to the side, enemy
                               jammer) and M2 12.7 km south with its own jammer J4
 backend/scenarios/directional.json   the demo with J3 directional (60° beam to the north, -20 dB sidelobes)

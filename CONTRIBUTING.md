@@ -44,6 +44,26 @@ uv run corridor-schema > ../schema/ws.schema.json   # after changing a message m
 - `--host 0.0.0.0` exposes the server on the LAN (another laptop, a phone browser).
 - A test fails when `schema/ws.schema.json` is out of date: regenerate it with `corridor-schema`.
 
+## Headless runs (`corridor-run`)
+
+The engine without the server: a scenario and a command script (the human actions: cut
+requests, confirmations, launches, at given simulated times), faster than real time, with an
+event log in JSON Lines.
+
+```bash
+cd backend
+uv run corridor-run run scenarios/demo.json --script scenarios/scripts/demo_two_flights.json \
+  --log run.jsonl                  # stops when every mission has arrived, else at --until-s
+uv run corridor-run summary run.jsonl
+```
+
+- Script: `{"commands": [{"at_s": 30, "command": {"type": "cut.confirm", "actor": "CMD",
+  "cut": "cut-1"}}, ...]}`. Each command is a WebSocket command; cuts are `cut-1`, `cut-2`... in
+  the order they are scheduled. Scripts live in `scenarios/scripts/`.
+- A refused command is logged with its reason; the run goes on.
+- Same scenario, script and options: the same log, byte for byte.
+- Options: `--step-s` (5), `--until-s` (3600), `--cell-m` (100).
+
 ## Development
 
 ```bash
