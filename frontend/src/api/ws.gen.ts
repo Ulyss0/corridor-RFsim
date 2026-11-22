@@ -312,12 +312,34 @@ export type Radars = string[];
  */
 export type WorthAsking = boolean;
 /**
+ * Threat id; LINK for the cells out of the pilot's reach.
+ */
+export type Threat3 = string;
+export type Kind3 = "friendly_jammer" | "enemy_jammer" | "radar" | "avoid" | "link";
+export type Effect = "avoided" | "climbed_over" | "crossed_in_cut" | "crossed";
+/**
+ * Crossings: when the route enters the zone.
+ */
+export type EnterS = number | null;
+/**
+ * Crossings: when it leaves it.
+ */
+export type ExitS = number | null;
+/**
+ * Zones that shape this route, in order along the way.
+ */
+export type Reasons = RouteReason[];
+/**
  * Routes the pilot may pick, fastest first, safe last. Empty once it flies.
  */
 export type Choices = RouteChoice[];
+/**
+ * Zones that shape the optimised route, in order along the way.
+ */
+export type Reasons1 = RouteReason[];
 export type Type26 = "route.request";
 export type Mission10 = string;
-export type Kind3 = "fastest" | "one_cut" | "safe";
+export type Kind4 = "fastest" | "one_cut" | "safe";
 /**
  * Ids of the cuts asked for; none for safe.
  */
@@ -458,8 +480,8 @@ export type Missions2 = Mission6[];
 /**
  * Id of the jammer or radar.
  */
-export type Threat3 = string;
-export type Kind4 = "friendly_jammer" | "enemy_jammer" | "radar" | "avoid";
+export type Threat4 = string;
+export type Kind5 = "friendly_jammer" | "enemy_jammer" | "radar" | "avoid";
 /**
  * Side of the ring the mission may not enter.
  */
@@ -920,6 +942,7 @@ export interface PlanUpdated {
   optimised_route: OptimisedRoute;
   profile: Profile;
   choices: Choices;
+  reasons: Reasons1;
 }
 /**
  * This interface was referenced by `CorridorWs`'s JSON-Schema
@@ -975,6 +998,7 @@ export interface RouteChoice {
   saved_pct: SavedPct1;
   radars: Radars;
   worth_asking: WorthAsking;
+  reasons: Reasons;
 }
 /**
  * A cut a route needs: jammer off on [start, end], safety margins included.
@@ -986,6 +1010,19 @@ export interface ProposedCut {
   jammer: Jammer2;
   start_s: StartS2;
   end_s: EndS2;
+}
+/**
+ * One zone that shapes the route: on the straight line from launch to target, or crossed.
+ *
+ * This interface was referenced by `CorridorWs`'s JSON-Schema
+ * via the `definition` "RouteReason".
+ */
+export interface RouteReason {
+  threat: Threat3;
+  kind: Kind3;
+  effect: Effect;
+  enter_s: EnterS;
+  exit_s: ExitS;
 }
 /**
  * A route request was made or answered.
@@ -1005,7 +1042,7 @@ export interface RouteRequested {
  */
 export interface RouteRequest {
   mission: Mission10;
-  kind: Kind3;
+  kind: Kind4;
   cuts: Cuts1;
   saved_s: SavedS2;
   saved_pct: SavedPct2;
@@ -1165,8 +1202,8 @@ export interface Drone {
  * via the `definition` "Zone".
  */
 export interface Zone {
-  threat: Threat3;
-  kind: Kind4;
+  threat: Threat4;
+  kind: Kind5;
   forbidden: Forbidden;
   ring: Ring;
 }

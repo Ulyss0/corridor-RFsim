@@ -356,3 +356,22 @@ def test_3d_a_radar_added_on_the_route_falls_back(scenario: Scenario) -> None:
     world.run_to(takeoff + 40)
     fallback = next(p for p in world.of(PlanUpdated) if p.status == "fallback")
     assert fallback.optimised_route[0].alt_m in scenario.terrain.levels_m
+
+
+# --- reasons --------------------------------------------------------------------------------
+
+
+def test_plans_carry_their_reasons(scenario: Scenario) -> None:
+    world = World(scenario)
+    baseline = world.m1.plan
+    assert baseline is not None and baseline.status == "baseline"
+    assert ("J3", "avoided") in [(r.threat, r.effect) for r in baseline.reasons]
+    one_cut = next(c for c in baseline.choices if c.kind == "one_cut")
+    assert ("J3", "crossed_in_cut") in [(r.threat, r.effect) for r in one_cut.reasons]
+    world.cut()
+    approved = world.m1.plan
+    assert approved is not None and approved.status == "approved"
+    j3 = next(r for r in approved.reasons if r.threat == "J3")
+    assert j3.effect == "crossed_in_cut"
+    sent = [p for p in world.of(PlanUpdated) if p.reasons]
+    assert sent  # on the wire too

@@ -49,6 +49,8 @@ src/
 - Map: grids, zones (friendly red / cut green / pending orange, enemy purple, radar orange;
   `forbidden: outside` drawn as the grid with the ring as a hole), launch and target of every
   mission, threats.
+- "Why this route" in the mission detail (`plan.reasons`: around, over, through during a cut,
+  through with the threat on), and one tag per reason on each route choice.
 - 3D scenarios (`terrain.mode: "3d"`): a level selector in the map toolbar shows the selected
   mission's zones at one flight level (`GET /api/zones3d`) in place of its 2D discs (zones to
   avoid stay 2D), and in grey the cells out of the pilot's reach at that level (`LINK`); the selected route is coloured by flight level; the mission detail shows the

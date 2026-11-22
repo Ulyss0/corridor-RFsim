@@ -1,8 +1,49 @@
 // Pure helpers to render any instant from the snapshot, the cuts and the last plan
 // (see "Rendering on the front" in docs/architecture.md). No React, no map.
-import type { ChoiceKind, Cut, Grid, Mission, MissionView, Position, RouteChoice, RoutePoint, Scenario, Zone } from '../api/protocol'
+import type { ChoiceKind, Cut, Grid, Mission, MissionView, Position, RouteChoice, RoutePoint, RouteReason, Scenario, Zone } from '../api/protocol'
 
 export type ZoneState = 'on' | 'cut' | 'pending'
+
+const REASON_KIND: Record<RouteReason['kind'], string> = {
+  friendly_jammer: 'jammer',
+  enemy_jammer: 'enemy jammer',
+  radar: 'radar',
+  avoid: 'zone to avoid',
+  link: '',
+}
+
+/** One line on why the route goes where it goes, e.g. "Around enemy jammer E1". */
+export function reasonText(r: RouteReason, label: (t: number) => string): string {
+  const name = r.kind === 'link' ? "the area out of the pilot's reach" : `${REASON_KIND[r.kind]} ${r.threat}`
+  const when = r.enter_s !== null && r.exit_s !== null ? `, ${label(r.enter_s)} to ${label(r.exit_s)}` : ''
+  switch (r.effect) {
+    case 'avoided':
+      return `Around ${name}`
+    case 'climbed_over':
+      return `Over ${name} (flies above its zone)`
+    case 'crossed_in_cut':
+      return `Through ${name} during its cut${when}`
+    case 'crossed':
+      if (r.kind === 'radar') return `Through ${name}: seen${when}`
+      if (r.kind === 'avoid') return `Through ${name}${when}`
+      return `Through ${name} while it is on${when}: control link at risk`
+  }
+}
+
+/** Short tag of a reason, for a route choice: "around E1", "J3 in cut", "over E2". */
+export function reasonTag(r: RouteReason): string {
+  const id = r.kind === 'link' ? 'no-link area' : r.threat
+  switch (r.effect) {
+    case 'avoided':
+      return `around ${id}`
+    case 'climbed_over':
+      return `over ${id}`
+    case 'crossed_in_cut':
+      return `${id} in cut`
+    case 'crossed':
+      return `through ${id}`
+  }
+}
 
 /** Friendly jammer state at `t`: a confirmed cut turns it off, a scheduled one is only pending. */
 export function friendlyZoneState(jammerId: string, cuts: Cut[], t: number): ZoneState {

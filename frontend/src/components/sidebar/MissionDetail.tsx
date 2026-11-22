@@ -3,7 +3,7 @@ import { Alert, Badge, Button, Group, Progress, Stack, Text } from '@mantine/cor
 import { send } from '../../api/client'
 import type { PlanUpdated } from '../../api/protocol'
 import { mockPlan } from '../../dev/mockPlan'
-import { choosing, clockLabel, missionOf, routePhases, startsInside } from '../../domain/view'
+import { choosing, clockLabel, missionOf, reasonText, routePhases, startsInside } from '../../domain/view'
 import { ROUTE_COLORS } from '../../map/mapView'
 import { useStore } from '../../store'
 import { STATUS_COLOR } from '../colors'
@@ -99,11 +99,22 @@ export function MissionDetail({ id }: { readonly id: string }) {
               {plan.status === 'fallback' ? 'Rerouted' : 'Take-off'} <b>{label(takeoff)}</b> · on target <b>{label(arrival)}</b>
             </Text>
           )}
-          {crossings.map((c) => (
-            <Text key={`${c.zone}-${c.start}`} size="sm">
-              Cross {c.zone}: enter <b>{label(c.start)}</b>, exit by <b>{label(c.end)}</b>
-            </Text>
-          ))}
+          {plan.reasons.length > 0 ? (
+            <div>
+              <Text size="xs" c="dimmed">Why this route</Text>
+              {plan.reasons.map((r) => (
+                <Text key={`${r.threat}-${r.effect}`} size="sm">
+                  {reasonText(r, label)}
+                </Text>
+              ))}
+            </div>
+          ) : (
+            crossings.map((c) => (
+              <Text key={`${c.zone}-${c.start}`} size="sm">
+                Cross {c.zone}: enter <b>{label(c.start)}</b>, exit by <b>{label(c.end)}</b>
+              </Text>
+            ))
+          )}
 
           {compare ? (
             <>

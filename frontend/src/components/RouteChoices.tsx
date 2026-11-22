@@ -1,7 +1,7 @@
 import { Alert, Badge, Button, Group, Paper, Progress, SegmentedControl, Stack, Text, UnstyledButton } from '@mantine/core'
 import { useState } from 'react'
 import { send } from '../api/client'
-import type { Cut, Mission, MissionView, OnTimeout, RouteChoice } from '../api/protocol'
+import type { Cut, Mission, MissionView, OnTimeout, RouteChoice, RouteReason } from '../api/protocol'
 import {
   choiceTitle,
   choosing,
@@ -9,6 +9,8 @@ import {
   durationLabel,
   highlightedChoice,
   kindTitle,
+  reasonTag,
+  reasonText,
   refusedKind,
   straightAnyway,
 } from '../domain/view'
@@ -153,6 +155,13 @@ export function RouteChoices({ view, mission: m, startTime, command }: {
   )
 }
 
+const REASON_COLOR: Record<RouteReason['effect'], string> = {
+  avoided: 'gray',
+  climbed_over: 'blue',
+  crossed_in_cut: 'teal',
+  crossed: 'red',
+}
+
 function ChoiceRow({ choice: c, detour, selected, refused, fastest, label, onFocus, onSelect }: {
   choice: RouteChoice
   detour: RouteChoice | null
@@ -186,6 +195,12 @@ function ChoiceRow({ choice: c, detour, selected, refused, fastest, label, onFoc
               {choiceTitle(c)} · on target {label(c.route[c.route.length - 1].t)}
             </Text>
             <Group gap={4} mt={2}>
+              {/* Radars crossed have their own badge below. */}
+              {c.reasons.filter((r) => !(r.kind === 'radar' && r.effect === 'crossed')).map((r) => (
+                <Badge key={`${r.threat}-${r.effect}`} size="xs" color={REASON_COLOR[r.effect]} variant="light" title={reasonText(r, label)}>
+                  {reasonTag(r)}
+                </Badge>
+              ))}
               {c.radars.length > 0 && (
                 <Badge size="xs" color="orange" variant="light">
                   Seen by {c.radars.join(', ')}

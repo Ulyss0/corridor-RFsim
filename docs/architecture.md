@@ -51,6 +51,7 @@ backend/src/corridor/
                   plan_fallback() (from the drone position in flight, no cut)
       smooth.py   string pulling of the grid route on the same masks: fewer points, never in a zone
     safety.py     Flight (route, delay, holds, battery), safety rule, cut start/end transitions
+    reasons.py    why a route goes where it goes: the zones that shape it, what it does about each
   engine/
     clock.py      SimClock: accelerated clock with an injectable wall-clock source
     engine.py     Engine: commands, one MissionRuntime per mission (plan, flight, drone),
@@ -653,6 +654,17 @@ the pilot's reach. Empty in 2D. The front end fetches them again with each
 snapshot (a threat added or removed comes with one) and shows one level at a time; a friendly
 jammer's outline takes the colour of its cut state like the 2D disc. A radar is the same 2D
 shape at every level.
+
+**Route reasons** (`domain/reasons.py`, `reasons` on `plan.updated` and on each route choice).
+A zone shapes a route when it lies on the straight line from launch to target (at the lowest
+level in 3D) or when the route crosses it. For each, in order along the way: `avoided` (around
+it), `climbed_over` (3D: the ground track passes under its lowest-level footprint, at a level
+it does not reach), `crossed_in_cut` (inside a friendly zone only within a cut of that jammer;
+for a choice, its proposed cuts count), or `crossed` (a radar the mission may cross, a zone to
+avoid, a jammer crossed anyway), with entry and exit times for crossings. Zones are the
+planner's: shapes in 2D, per-level cells in 3D (`LINK` for the cells out of the pilot's reach).
+Zones to avoid are not enforced, so they only appear when crossed. The time the detours cost is
+in the metrics as a whole, not per zone. The engine computes them when it sends a plan.
 
 **Forbidden cells.** Cuts are piecewise constant in time, so `masks.py` precomputes one mask per
 interval between cut boundaries with numpy, not one per time step. A cell is forbidden when it
