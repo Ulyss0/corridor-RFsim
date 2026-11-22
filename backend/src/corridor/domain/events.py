@@ -8,7 +8,8 @@ from pydantic import Field
 
 from corridor.domain.geo import Position
 from corridor.domain.model import Model
-from corridor.domain.scenario import EnemyThreat, LostLinkAction, Mission
+from corridor.domain.scenario import EnemyThreat, Mission
+from corridor.domain.scenario import LostLinkAction as LostLinkAction
 from corridor.domain.state import ClockState, Cut, MissionStatus
 
 

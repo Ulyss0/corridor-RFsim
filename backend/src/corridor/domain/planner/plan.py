@@ -15,7 +15,6 @@ from scipy.ndimage import distance_transform_edt
 
 from corridor.domain.events import (
     ChoiceKind,
-    LostLinkAction,
     PlanMetrics,
     PlanStatus,
     ProposedCut,
@@ -28,7 +27,7 @@ from corridor.domain.planner.astar import Step, earliest_path
 from corridor.domain.planner.layers import Cells, Layers, forbidden_cells, mission_layers
 from corridor.domain.planner.masks import TimedMasks, shape_mask
 from corridor.domain.planner.smooth import smooth_route
-from corridor.domain.scenario import Mission, Scenario
+from corridor.domain.scenario import LostLinkAction, Mission, Scenario
 from corridor.domain.state import Cut, merge_cuts
 from corridor.domain.zones import ThreatShape, forbidden_shapes, mission_shapes
 

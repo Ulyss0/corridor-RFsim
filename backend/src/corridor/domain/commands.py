@@ -10,9 +10,10 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
-from corridor.domain.events import ChoiceKind, LostLinkAction, OnTimeout
+from corridor.domain.events import ChoiceKind, OnTimeout
 from corridor.domain.geo import Position
 from corridor.domain.model import Model
+from corridor.domain.scenario import LostLinkAction
 
 
 class ScheduleCut(Model):
