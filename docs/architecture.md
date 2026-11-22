@@ -65,14 +65,21 @@ backend/src/corridor/
       app.py      FastAPI app, /ws endpoint
       server.py   corridor-server entry point
       schema.py   corridor-schema: JSON Schema export
-  tak/            CoT client and encoders, unchanged; moves to adapters/tak with the TAK adapter
+    tak/
+      bridge.py   TakBridge: engine events -> CoT through OTS (routes, zones, drones, GeoChat)
+  tak/            CoT client and encoders (shapes, markers, GeoChat, delete), corridor-tak CLI
 backend/scenarios/demo.json   demo scenario: M1 (J3 between pilot and target, radar to the side, enemy
                               jammer) and M2 12.7 km south with its own jammer J4
 backend/scenarios/directional.json   the demo with J3 directional (60° beam to the north, -20 dB sidelobes)
 schema/ws.schema.json         generated protocol schema (repository root), consumed by the front end
 ```
 
-Still to write, by whoever owns the piece: the TAK adapter (`adapters/tak`).
+TAK adapter (`adapters/tak/bridge.py`, on with `corridor-server --tak-host`): one OTS
+connection; each mission's planned route as a line (remarks: status, times, levels, reasons),
+its zones as polygons (deleted when they go away), the drones at most once a second, and the
+notifications as GeoChat, direct to a callsign seen on the server, else to All Chat Rooms (the
+command's stay in the web front end). Full picture again every 15 s; reconnects every 5 s.
+One way: ATAK input does not become commands yet, and the audience rules do not apply to it.
 
 Dependency rule: `domain` imports nothing from `engine` or `adapters`; `engine` imports nothing
 from `adapters`. It can be enforced later with `import-linter` if needed.
@@ -436,8 +443,8 @@ classDiagram
 
 | Port | Direction | Implementations |
 |---|---|---|
-| `Engine.submit(command)` | in | WebSocket adapter; TAK adapter later |
-| `Engine.subscribe(callback)` | out | WebSocket hub; CoT adapter later |
+| `Engine.submit(command)` | in | WebSocket adapter |
+| `Engine.subscribe(callback)` | out | WebSocket hub; TAK bridge |
 
 The clock is not a port: `SimClock` takes its wall-clock source as a parameter, and tests pass
 a fake one.
