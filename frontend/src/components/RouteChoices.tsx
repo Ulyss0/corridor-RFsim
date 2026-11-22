@@ -1,7 +1,7 @@
 import { Alert, Badge, Button, Group, Paper, Progress, SegmentedControl, Stack, Text, UnstyledButton } from '@mantine/core'
 import { useState } from 'react'
 import { send } from '../api/client'
-import type { Cut, Mission, MissionView, OnTimeout, RouteChoice, RouteReason } from '../api/protocol'
+import type { Cut, LostLinkAction, Mission, MissionView, OnTimeout, RouteChoice, RouteReason } from '../api/protocol'
 import {
   choiceTitle,
   choosing,
@@ -9,6 +9,7 @@ import {
   durationLabel,
   highlightedChoice,
   kindTitle,
+  LOST_LINK_LABELS,
   reasonTag,
   reasonText,
   refusedKind,
@@ -73,11 +74,35 @@ export function RouteChoices({ view, mission: m, startTime, command }: {
                   target: m.target,
                   departure_s: m.departure_s,
                   cross_radars: v === 'cross',
+                  lost_link: m.lost_link,
                 })
               }
               data={[
                 { value: 'avoid', label: 'Avoid radars' },
                 { value: 'cross', label: 'Fly through radars' },
+              ]}
+            />
+          </Group>
+          <Group justify="space-between" wrap="nowrap">
+            <Text size="xs" c="dimmed">Lost-link failsafe</Text>
+            <SegmentedControl
+              size="xs"
+              value={m.lost_link ?? 'rth'}
+              onChange={(v) =>
+                send({
+                  type: 'mission.update',
+                  mission: m.id,
+                  launch: m.launch,
+                  target: m.target,
+                  departure_s: m.departure_s,
+                  cross_radars: m.cross_radars,
+                  lost_link: v as LostLinkAction,
+                })
+              }
+              data={[
+                { value: 'rth', label: 'RTH' },
+                { value: 'continue', label: 'Continue' },
+                { value: 'land', label: 'Land' },
               ]}
             />
           </Group>
@@ -211,6 +236,9 @@ function ChoiceRow({ choice: c, detour, selected, refused, fastest, label, onFoc
                   Gain too small to ask
                 </Badge>
               )}
+              <Badge size="xs" color={LOST_LINK_LABELS[c.lost_link].color} variant="outline" title={LOST_LINK_LABELS[c.lost_link].detail}>
+                {LOST_LINK_LABELS[c.lost_link].short}
+              </Badge>
               {refused && (
                 <Badge size="xs" color="red" variant="light">
                   Refused by the command

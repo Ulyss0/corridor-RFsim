@@ -27,7 +27,7 @@ from corridor.domain.planner.astar import Step, earliest_path
 from corridor.domain.planner.layers import Cells, Layers, forbidden_cells, mission_layers
 from corridor.domain.planner.masks import TimedMasks, shape_mask
 from corridor.domain.planner.smooth import smooth_route
-from corridor.domain.scenario import Mission, Scenario
+from corridor.domain.scenario import LostLinkAction, Mission, Scenario
 from corridor.domain.state import Cut, merge_cuts
 from corridor.domain.zones import ThreatShape, forbidden_shapes, mission_shapes
 
@@ -56,6 +56,7 @@ class MissionPlan:
     baseline_route: list[RoutePoint]
     optimised_route: list[RoutePoint]
     choices: list[RouteChoice] = field(default_factory=list)
+    lost_link: LostLinkAction = "rth"
 
 
 def plan_mission(
@@ -102,6 +103,7 @@ def plan_mission(
         baseline_route=baseline,
         optimised_route=optimised,
         choices=route_choices(scenario, mission, grid, cuts, flyable),
+        lost_link=mission.lost_link,
     )
 
 
@@ -133,6 +135,7 @@ def _plan_through_cuts(
         baseline_route=route,
         optimised_route=route,
         choices=choices,
+        lost_link=mission.lost_link,
     )
 
 
@@ -306,6 +309,7 @@ def _choice(
         saved_pct=100 * (safe_s - route_s) / safe_s,
         radars=radars,
         worth_asking=worth,
+        lost_link=mission.lost_link,
     )
 
 
@@ -440,6 +444,7 @@ def plan_fallback(
         metrics=route_metrics(mission, route, route),
         baseline_route=route,
         optimised_route=route,
+        lost_link=mission.lost_link,
     )
 
 

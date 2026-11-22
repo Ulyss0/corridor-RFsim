@@ -1,6 +1,6 @@
 // Pure helpers to render any instant from the snapshot, the cuts and the last plan
 // (see "Rendering on the front" in docs/architecture.md). No React, no map.
-import type { ChoiceKind, Cut, Grid, Mission, MissionView, Position, RouteChoice, RoutePoint, RouteReason, Scenario, Zone } from '../api/protocol'
+import type { ChoiceKind, Cut, Grid, LostLinkAction, Mission, MissionView, Position, RouteChoice, RoutePoint, RouteReason, Scenario, Zone } from '../api/protocol'
 
 export type ZoneState = 'on' | 'cut' | 'pending'
 
@@ -331,4 +331,25 @@ export function flownRoute(view: MissionView): RoutePoint[] {
   const r = view.request
   if (r && straightAnyway(view) && r.route.length > 0) return r.route
   return view.plan?.optimised_route ?? []
+}
+
+export const LOST_LINK_LABELS: Record<LostLinkAction, { title: string; detail: string; short: string; color: string }> = {
+  rth: {
+    title: 'RTH (Return to Home)',
+    detail: 'Backtrack along safe path to launch if control link is lost',
+    short: 'RTH',
+    color: 'blue',
+  },
+  continue: {
+    title: 'Continue autonomous track',
+    detail: 'Maintain flight plan to target even without link',
+    short: 'Continue',
+    color: 'teal',
+  },
+  land: {
+    title: 'Emergency land',
+    detail: 'Immediate precautionary landing on spot',
+    short: 'Land',
+    color: 'orange',
+  },
 }
