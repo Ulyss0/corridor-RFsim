@@ -17,6 +17,11 @@ gives every jammer a mission-independent footprint for the command view (``nomin
 requested at runtime (``mission.request``), the file only holds those known at start. A mission
 in the file names its pilot and takes the drone fields from it (``Pilot.mission``).
 
+``relays`` are friendly relay antennas: each repeats the control link of every drone on its
+``bands``, so the drone is controlled from whichever connection point (its pilot or a relay)
+gives the strongest signal. The relay is assumed always linked to the pilot (backhaul not
+modelled, open decision).
+
 Every callsign has one role: the command post, a pilot or the operator of friendly jammers
 (``Scenario.role_of``).
 """
@@ -82,6 +87,27 @@ class FriendlyJammer(Model):
         return self
 
 
+RELAY_MAST_M = 10.0
+"""Default height of a relay antenna above its ground."""
+
+
+class Relay(Model):
+    """Friendly relay antenna: a second connection point for the control link of every drone on
+    its ``bands``. Not jammed itself and always linked to the pilot (backhaul not modelled)."""
+
+    id: str
+    pos: Position
+    eirp_w: float = Field(gt=0, description="EIRP of the relayed control link, watts.")
+    bands: list[str] = Field(min_length=1)
+    mast_m: float = Field(
+        default=RELAY_MAST_M, gt=0, description="Antenna height above the ground, metres (3D)."
+    )
+    on: bool = Field(
+        default=True,
+        description="Off, the relay is ignored. The command switches it live (`relay.switch`).",
+    )
+
+
 class EnemyRadar(Model):
     type: Literal["radar"] = "radar"
     id: str
@@ -140,12 +166,25 @@ class Drone(Model):
     battery_max_s: float = Field(gt=0, description="Flight time on a full battery.")
 
 
+LostLinkAction = Literal["rth", "continue", "land"]
+"""Failsafe instruction if control link is lost:
+rth: Return to Home (backtrack along safe path to launch).
+continue: Maintain autonomous track to target.
+land: Immediate precautionary landing."""
+
+
 class Pilot(Model):
     callsign: str
     drone: Drone
 
     def mission(
-        self, mission_id: str, launch: Position, target: Position, departure_s: float
+        self,
+        mission_id: str,
+        launch: Position,
+        target: Position,
+        departure_s: float,
+        cross_radars: bool = False,
+        lost_link: LostLinkAction = "rth",
     ) -> Mission:
         return Mission(
             id=mission_id,
@@ -153,6 +192,8 @@ class Pilot(Model):
             launch=launch,
             target=target,
             departure_s=departure_s,
+            cross_radars=cross_radars,
+            lost_link=lost_link,
             **_drone_fields(self.drone),
         )
 
@@ -180,6 +221,10 @@ class Mission(Model):
     cross_radars: bool = Field(
         default=False,
         description="The pilot accepts being seen: routes may cross radar zones (never jammers).",
+    )
+    lost_link: LostLinkAction = Field(
+        default="rth",
+        description="Failsafe instruction if control link is lost: rth, continue or land.",
     )
 
 
@@ -319,6 +364,9 @@ class Scenario(Model):
     command_callsign: str = Field(description="Callsign of the command post, which sees all.")
     friendly_jammers: list[FriendlyJammer]
     enemy_threats: list[EnemyThreat] = Field(default_factory=list)
+    relays: list[Relay] = Field(
+        default_factory=list, description="Friendly relay antennas extending the control link."
+    )
     terrain: Terrain = Field(default_factory=Terrain)
     pilots: list[Pilot] = Field(min_length=1)
     missions: list[Mission] = Field(
@@ -356,6 +404,7 @@ class Scenario(Model):
             [
                 *(j.id for j in self.friendly_jammers),
                 *(t.id for t in self.enemy_threats),
+                *(r.id for r in self.relays),
                 *(m.id for m in self.missions),
             ],
         )
@@ -395,6 +444,13 @@ class Scenario(Model):
 
     def friendly_jammer(self, jammer_id: str) -> FriendlyJammer | None:
         return next((j for j in self.friendly_jammers if j.id == jammer_id), None)
+
+    def relays_on(self, band: str) -> list[Relay]:
+        """Relays switched on that repeat the control link on ``band``."""
+        return [r for r in self.relays if r.on and band in r.bands]
+
+    def relay(self, relay_id: str) -> Relay | None:
+        return next((r for r in self.relays if r.id == relay_id), None)
 
     def mission(self, mission_id: str) -> Mission | None:
         return next((m for m in self.missions if m.id == mission_id), None)

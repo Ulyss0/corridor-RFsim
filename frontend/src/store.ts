@@ -30,10 +30,13 @@ export interface RequestDraft {
 const NO_DRAFT: RequestDraft = { open: false, editing: null, launch: null, target: null, picking: null }
 
 /** What the sidebar shows under its action bar, when no form is open. */
+/** Kinds of object the Objects tab lists. */
+export type ObjectKind = 'jammer' | 'threat' | 'relay'
+
 export type SidePanel =
   | { view: 'list' }
   | { view: 'mission'; id: string }
-  | { view: 'object'; kind: 'jammer' | 'threat'; id: string }
+  | { view: 'object'; kind: ObjectKind; id: string }
 
 /** EW cut form, over the sidebar panel: fields it starts with. */
 export interface CutDraft {
@@ -46,7 +49,7 @@ const LIST: SidePanel = { view: 'list' }
 /** What the map (and, for a mission, the timeline) should frame after a click in the sidebar.
  * `seq` changes on every click, so a second click on the same item frames it again. */
 export interface Focus {
-  kind: 'mission' | 'jammer' | 'threat'
+  kind: 'mission' | ObjectKind
   id: string
   seq: number
 }
@@ -111,7 +114,7 @@ interface State {
    * the timeline. */
   openMission: (id: string) => void
   /** Show an object in the sidebar, centred on the map. */
-  openObject: (kind: 'jammer' | 'threat', id: string) => void
+  openObject: (kind: ObjectKind, id: string) => void
   /** Back to the lists (the selected mission stays selected on the map). */
   openList: () => void
   setListTab: (tab: 'missions' | 'objects') => void
@@ -249,6 +252,7 @@ export const useStore = create<State>((set, get) => ({
       }
       case 'threat.added':
       case 'threat.removed':
+      case 'relay.switched':
         // A new snapshot follows with the zones, grids and threats in view; the
         // notification reaches the feed.
         set(clockSync)

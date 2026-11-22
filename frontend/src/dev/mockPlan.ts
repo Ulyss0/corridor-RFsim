@@ -37,6 +37,7 @@ export function mockPlan(m: Mission, cuts: Cut[]): PlanUpdated {
     profile: [],
     choices: [],
     reasons: [],
+    lost_link: m.lost_link ?? 'rth',
   }
 }
 

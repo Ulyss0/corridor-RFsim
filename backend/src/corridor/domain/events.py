@@ -9,6 +9,7 @@ from pydantic import Field
 from corridor.domain.geo import Position
 from corridor.domain.model import Model
 from corridor.domain.scenario import EnemyThreat, Mission
+from corridor.domain.scenario import LostLinkAction as LostLinkAction
 from corridor.domain.state import ClockState, Cut, MissionStatus
 
 
@@ -64,6 +65,16 @@ class ThreatRemoved(Model):
     type: Literal["threat.removed"] = "threat.removed"
     threat: str
     missions: list[str] = Field(description="Missions it concerned.")
+
+
+class RelaySwitched(Model):
+    """The command switched a relay on or off. Every client gets a new snapshot right after:
+    zones, grids and scopes may all have changed."""
+
+    type: Literal["relay.switched"] = "relay.switched"
+    relay: str
+    on: bool
+    missions: list[str] = Field(description="Missions on its bands.")
 
 
 class MissionStatusChanged(Model):
@@ -195,6 +206,10 @@ class RouteChoice(Model):
     reasons: list[RouteReason] = Field(
         default_factory=list, description="Zones that shape this route, in order along the way."
     )
+    lost_link: LostLinkAction = Field(
+        default="rth",
+        description="Failsafe instruction if control link is lost (rth, continue, land).",
+    )
 
 
 class PlanUpdated(Model):
@@ -217,6 +232,10 @@ class PlanUpdated(Model):
     reasons: list[RouteReason] = Field(
         default_factory=list,
         description="Zones that shape the optimised route, in order along the way.",
+    )
+    lost_link: LostLinkAction = Field(
+        default="rth",
+        description="Failsafe instruction if control link is lost (rth, continue, land).",
     )
 
 
@@ -288,6 +307,7 @@ Event = Annotated[
     | MissionUpdated
     | ThreatAdded
     | ThreatRemoved
+    | RelaySwitched
     | MissionStatusChanged
     | Notification
     | PlanUpdated

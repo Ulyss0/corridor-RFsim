@@ -1,26 +1,94 @@
+<p align="center"><img src="docs/assets/banner.jpg" alt="Corridor: 4D drone route planning, re-planned live as the electromagnetic front moves"></p>
+
 # Corridor
 
-4D drone route planning synchronised with the friendly EW schedule (idea #1 in
-`../edth_ideas.xlsx`, reworked). The planner computes the route, in space and time, that reaches
-the target while avoiding radars and jamming zones and keeping the radio link with the pilot.
-When a friendly jammer has a scheduled cut, the planner recomputes a more direct route that
-crosses the zone during the cut, and notifies the pilot and the jammer operator. Goal: save the
-battery a detour would cost.
+<!-- prettier-ignore -->
+| | |
+| --- | --- |
+| CI/CD | [![CI](https://github.com/Yoann-CORGNET/corridor/actions/workflows/ci.yml/badge.svg)](https://github.com/Yoann-CORGNET/corridor/actions/workflows/ci.yml) [![Dependabot](https://img.shields.io/badge/Dependabot-weekly-025E8C?logo=dependabot&logoColor=white)](.github/dependabot.yml) |
+| Backend | [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/) [![Pydantic](https://img.shields.io/badge/Pydantic-2-E92063?logo=pydantic&logoColor=white)](https://docs.pydantic.dev/) [![NumPy](https://img.shields.io/badge/NumPy-2-013243?logo=numpy&logoColor=white)](https://numpy.org/) |
+| Frontend | [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/) [![TypeScript](https://img.shields.io/badge/TypeScript-7-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/) [![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vite.dev/) [![MapLibre](https://img.shields.io/badge/MapLibre_GL-6-396CB2?logo=maplibre&logoColor=white)](https://maplibre.org/) [![Mantine](https://img.shields.io/badge/Mantine-9-339AF0?logo=mantine&logoColor=white)](https://mantine.dev/) |
+| TAK | [![OpenTAKServer](https://img.shields.io/badge/OpenTAKServer-1.8.3-2E3440)](https://github.com/brian7704/OpenTAKServer) [![CoT](https://img.shields.io/badge/protocol-Cursor_on_Target-4A5568)](docs/tak.md) [![ATAK](https://img.shields.io/badge/built_for-ATAK-556B2F?logo=android&logoColor=white)](docs/tak.md) |
+| Meta | [![uv](https://img.shields.io/badge/uv-managed-DE5FE9?logo=uv&logoColor=white)](https://docs.astral.sh/uv/) [![Ruff](https://img.shields.io/badge/linted_by-Ruff-D7FF64?logo=ruff&logoColor=black)](https://docs.astral.sh/ruff/) [![mypy](https://img.shields.io/badge/mypy-strict-2A6DB2)](https://mypy-lang.org/) [![Oxlint](https://img.shields.io/badge/linted_by-Oxlint-32F3E9?logo=oxc&logoColor=black)](https://oxc.rs/) [![Conventional Commits](https://img.shields.io/badge/Conventional_Commits-1.0.0-FE5196?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org/) [![EDTH Paris 2026](https://img.shields.io/badge/EDTH-Paris_2026-FF8A3D)](#corridor) |
 
-Full description of the feature (users, behaviour, safety rules, demo story, open questions):
-[`docs/feature.md`](docs/feature.md).
+Drone routes are planned before take-off, but the front changes during the flight: a new enemy
+jammer goes up, a radar is reported. Friendly jammers add a problem of their own: they protect
+units against enemy drones, but they also cut the links of friendly drones. Pilots work around
+them with long detours, or by negotiating a corridor with the nearby unit over group chats.
 
-No ATAK plugin: the TAK SDK is not available, so Corridor runs as an external service that
-speaks CoT (Cursor on Target) to an OpenTAKServer (OTS). ATAK clients connected to the same
-OTS see zones, routes and the drone as regular shapes, and what ATAK sends (shapes, chat,
-positions) comes back to Corridor.
+Corridor is a 4D route planner (space and time). It computes the route that reaches the target
+while avoiding radars and jamming zones and keeping the radio link with the pilot, then keeps
+re-planning it until the drone is on target.
+
+Built at the European Defense Tech Hackathon (EDTH) Paris 2026. Software only.
+
+## What it does
+
+- **Plans in space and time.** Timed route around radars and jamming zones, within the battery,
+  with up to three options (fastest, one cut, safe) and the reason for each bend.
+- **Re-plans in flight.** A new threat, a cancelled cut, a late drone or a relay switched off:
+  the engine checks the rest of every flight every half second and re-plans from where the drone
+  is.
+- **Times the crossing on a friendly jammer cut.** When the fastest way runs through a friendly
+  jammer, the pilot requests a cut in one click. The crossing is timed inside the cut window with
+  safety margins, and the jammer restart time never moves.
+- **Real terrain and antennas.** 3D zones per flight level (30 to 250 m) shaped by terrain and
+  buildings, friendly relay antennas, directional jammers, a lost-link failsafe on every route.
+- **One picture, filtered per role.** Command, pilot and jammer operator each get their own web
+  view; the server filters what each role may see.
+- **Built for ATAK.** No plugin: Corridor speaks CoT (Cursor on Target) to an OpenTAKServer that
+  ATAK phones connect to.
+
+Safety rules (EW protection first, no crossing on an unconfirmed cut, a human approves) and the
+full behaviour: [`docs/feature.md`](docs/feature.md).
+
+<table>
+<tr>
+<td><img src="docs/assets/relay-on.jpg" alt="Hong Kong heatmap at 30 m, relay on: the drone crosses the harbour inside the area the relay keeps in reach"></td>
+<td><img src="docs/assets/relay-off.jpg" alt="Same view after command switches the relay off: the drone in flight turns away on a new route to the target"></td>
+</tr>
+<tr>
+<td align="center">Relay on: the route crosses the harbour.</td>
+<td align="center">Relay switched off mid-flight: new route from the drone.</td>
+</tr>
+</table>
+
+## Status
+
+- Working: scenario loading, J/S jamming zones (2D and 3D), planner (SIPP over safe intervals,
+  take-off sweep, smoothing, route reasons), cut requests and confirmations, simulated flights
+  with the safety rule and fallback routes, relays, heatmap, WebSocket server with its JSON
+  Schema, web front end with the three role views.
+- TAK side: OTS stack, CoT client and demo shapes work on their own (sections below). The TAK
+  adapter that publishes the engine's zones, routes and notifications to ATAK is not wired yet.
+- Simulated: the drone flight (no autopilot link), threats entered by hand, jammer schedules
+  entered in Corridor.
+
+## Quick start
+
+```bash
+# terminal 1
+cd backend
+uv sync
+uv run corridor-server --scenario scenarios/demo_passage_b.json
+# terminal 2
+cd frontend
+npm install
+npm run dev        # http://localhost:5173
+```
+
+Scenarios in `backend/scenarios/`: `demo_passage_a.json` (new threat mid-flight) and
+`demo_passage_b.json` (crossing during a cut), both scripted in
+[`docs/demo_script.md`](docs/demo_script.md); `hongkong.json` and `hongkong_relay.json` (3D,
+buildings, relay); `demo.json`, `demo3d.json`, `directional.json`, `newyork.json`,
+`annecy.json`.
 
 ## Architecture
 
 ```
 web front end ◄──WebSocket /ws──► backend (Python, one process: FastAPI + uvicorn)
 (planning screen)                   ├─ engine: world state, simulation clock, safety rules
-                                    ├─ planner: pure computation, runs off the event loop (to write)
+                                    ├─ planner: pure computation, in a worker process
                                     ├─ WebSocket adapter: commands in, events out
                                     └─ TAK adapter ◄──CoT, TCP 8088──► OpenTAKServer ◄──► ATAK (Android)
 ```
@@ -28,211 +96,33 @@ web front end ◄──WebSocket /ws──► backend (Python, one process: Fast
 - The engine is the single owner of state: scenario, cuts, mission status, simulation time.
   Adapters only send it commands and receive its events. The web front end and ATAK are two
   views of it.
-- Planner: pure function (no state, no clock), so it can run in a process pool. J/S jamming
-  model and planner design in [docs/architecture.md](docs/architecture.md).
+- Planner: pure function (no state, no clock), run in a worker process. J/S jamming model and
+  planner design in [docs/architecture.md](docs/architecture.md).
 - TAK adapter (`corridor.adapters.tak`, `corridor-server --tak-host`): publishes routes, zones,
-  drones and notifications (GeoChat) as CoT. One way for now: ATAK chat does not become commands.
-- OTS is only the relay to ATAK. The web front end never talks to OTS directly.
+  drones and notifications (GeoChat) as CoT. One way for now: ATAK chat does not become
+  commands. The CoT client (`corridor.tak`) works standalone.
+- No ATAK plugin: access to the official TAK SDK is restricted, so Corridor runs as an external
+  service. OTS is only the relay to ATAK; the web front end never talks to OTS directly.
 
 Core architecture, module layout and WebSocket protocol: [docs/architecture.md](docs/architecture.md).
 
-Status:
-- Backend core: scenario loading and checks, J/S zones, planning grid, cut scheduling /
-  confirmation / cancellation, mission launch, accelerated clock, WebSocket server, its JSON
-  Schema, tests.
-- Planner (masks, SIPP, takeoff sweep, statuses and metrics) running in a worker process and
-  emitting `plan.updated`.
-- Flight: simulated drone (`drone.state`), launch only on a flyable plan, safety rule (late
-  drone or cancelled cut -> fallback route from the drone position), timed jammer restarts
-  (`jammer.restarted`), `inject.delay` demo twist.
-- TAK side: OTS stack, CoT client, and the engine published to ATAK with `--tak-host` (sections
-  below).
-- Front end: first draft in `frontend/` (map, cuts, notifications, timeline, live drone).
-
-## Front end
-
-Planning screen used for the demo; ATAK stays the field view. Lives in `frontend/` (first draft:
-what works and how to run it in [`frontend/README.md`](frontend/README.md)).
-
-| Layer | Choice | Why |
-|---|---|---|
-| UI | React + Vite + TypeScript | Known by the team, typed contract with the backend |
-| Components | Mantine | Panels, buttons, notifications, dark theme without CSS work |
-| Map | MapLibre GL JS, used directly (no wrapper library) | GeoJSON layers updated in place, smooth animation, offline tiles |
-| Basemap | Online tiles + an offline PMTiles extract of the demo area | The map keeps working without venue Wi-Fi |
-| Timeline | vis-timeline | Draggable cut windows and a moving time cursor out of the box |
-| Client state | Zustand | One small store, fed by the WebSocket |
-
-Layout:
-
-- Map, about 70% of the screen: jamming zones (red = active, green = cut, purple = enemy),
-  radars (orange), baseline route (grey, dashed), planned route, animated drone, ATAK users'
-  positions.
-- Right panel: mission card (distance, time, battery vs detour), route options, approve button,
-  notification feed (pilot and EW operator).
-- Bottom: timeline, one row per jammer with its cut windows, plus one row for the drone showing
-  when it crosses each zone. Scrubbing the timeline updates the map.
-
-Rules:
-
-- All map code sits in one framework-free module, `frontend/src/map/mapView.ts` (`setZones`,
-  `setRoutes`, `setDrone`, `setPhones`, ...). React components only create the map and call it.
-- The front end holds no business state: commands go to the backend and state comes back over
-  the same WebSocket (protocol in [docs/architecture.md](docs/architecture.md)). On (re)connect the backend sends the full state, so a page reload or a
-  dropped connection loses nothing.
-- No internet needed at runtime: fonts, scripts and basemap are bundled.
-- Message types are generated from `schema/ws.schema.json` (see "Contract" in
-  [docs/architecture.md](docs/architecture.md)), never written by hand.
-- Demo build: `npm run build`, then the backend serves `frontend/dist/` as static files. One process,
-  one port, no Node on the demo laptop. The static mount is not in `adapters/ws/app.py` yet.
-- Demo controls: scenario picker, start / pause / speed, reset, a keyboard shortcut per demo
-  step.
-
-Repository layout:
+## Repository layout
 
 ```
 backend/    Python project (uv): engine, WebSocket server, TAK client, tests, scenarios
 schema/     WebSocket protocol JSON Schema, generated by the backend, consumed by the front end
 infra/ots/  OpenTAKServer stack (Docker compose)
-docs/       architecture.md (core, protocol, planner design), feature.md (functional spec)
+docs/       architecture.md (core, protocol, planner design), feature.md (functional spec),
+            demo_script.md (timed demo runs), assets/ (README images)
 resources/  research notes, standalone planner prototype, old state of the art (reference only)
-frontend/   front end (React + Vite), first draft
+frontend/   front end (React + Vite)
 ```
 
-## Corridor server
+## Documentation
 
-Python commands run from `backend/`.
-
-```bash
-cd backend
-uv sync
-uv run corridor-server            # ws://127.0.0.1:8000/ws?callsign=..., scenarios/demo.json, clock x20, paused
-uv run corridor-server --host 0.0.0.0 --port 8000 --clock-factor 30 --cell-m 200 \
-  --scenario scenarios/other.json
-uv run corridor-schema > ../schema/ws.schema.json   # after changing a message model
-```
-
-- A client connects with its callsign (`/ws?callsign=CMD`, `PILOT-1`, `EW-J3`...). It gets a
-  `snapshot` and the events its role may see (command: everything; pilot: its mission; jammer
-  operator: its jammers and the missions they concern). A reconnect gets a fresh snapshot.
-- The simulation clock starts paused at t = 0; the front starts it with a `clock.set` command.
-- Demo: with the demo powers, J3's zone takes about 300 s to cross. A cut shorter than about
-  7 min (crossing + 30 s + 60 s of margins) cannot give the straight route.
-- Late-drone twist: launch on an approved plan, start the clock, then send `inject.delay`
-  (front: "Hold drone 120 s") before the drone reaches J3: it switches to a fallback route.
-- State lives in memory: restart the server to reset the scenario.
-- `--host 0.0.0.0` exposes the server on the LAN (another laptop, a phone browser).
-- A test fails when `schema/ws.schema.json` is out of date: regenerate it with `corridor-schema`.
-
-## Requirements
-
-- Docker with the compose plugin, daemon running (`sudo systemctl enable --now docker`, user in
-  the `docker` group)
-- uv (installs Python 3.12 if missing)
-- Node.js LTS (front end development only)
-
-## Start OTS
-
-```bash
-cd infra/ots
-cp ots_config.env.example ots_config.env
-docker compose up -d
-docker compose ps        # ots must become "healthy" (about 1 minute on first start)
-docker compose logs -f ots
-```
-
-`infra/ots/compose.yml` is a trimmed copy of `brian7704/OpenTAKServer-Docker@30aa20b`. The header
-of the file lists what was removed and why (no web UI, no video for now).
-
-Images are pinned by version tag and digest: OTS 1.8.3 (2026-11-11). Do not use upstream
-`:master`: it is a stale 1.5.14 build from 2025-10 that loses RabbitMQ bindings at random.
-To upgrade: change the version tag in `compose.yml`, `docker compose pull`, run the smoke test
-(several times, including after `docker compose up -d --force-recreate`), then re-pin with:
-
-```bash
-for img in $(docker compose config --images); do
-  docker image inspect --format '{{index .RepoDigests 0}}' "$img"
-done
-```
-
-First start takes 1 to 2 minutes (CA creation, database migrations). The one-shot `ots-init`
-service gives the OTS user write access to the data volume, then exits.
-
-The OTS API is published on `127.0.0.1:8081` only: `curl http://127.0.0.1:8081/api/health`.
-
-Reset everything (deletes the OTS database and CA): `docker compose down -v`.
-
-## TAK CLI (`corridor-tak`)
-
-```bash
-cd backend
-uv sync
-uv run corridor-tak smoke     # two connections through OTS, exit 0 if demo shapes are routed
-uv run corridor-tak demo      # publish a test jam zone + corridor, refreshed every 30 s
-uv run corridor-tak listen    # print every CoT routed to us
-uv run corridor-tak listen --capture captures/   # also save raw XML
-```
-
-Options: `--host` (default 127.0.0.1), `--port` (8088), `--lat` / `--lon` (demo position).
-
-## Connect ATAK
-
-1. Phone and laptop on the same network (Wi-Fi LAN, or the same Tailscale tailnet).
-2. If a firewall runs on the laptop, open TCP 8088.
-3. ATAK: Settings > Network Preferences > TAK Servers > Add. Address: laptop IP, port 8088,
-   protocol TCP, no SSL.
-4. From `backend/`, run `uv run corridor-tak demo --lat <lat> --lon <lon>` near where the map is centered: a red
-   jam zone, a blue corridor crossing it and an EW-1 marker appear.
-5. Live: `uv run corridor-server --scenario scenarios/hongkong_scripted.json --tak-host 127.0.0.1`.
-   ATAK then shows each mission's zones (friendly red, green while cut), its planned route
-   (colour by status, reasons and times in the remarks), the drone in flight, and receives the
-   notifications as GeoChat. Set the phone's callsign to the pilot's (`PILOT-1`) or the
-   operator's (`EW-HK`) to get them as direct messages; otherwise they go to All Chat Rooms,
-   prefixed with the callsign. Everything is sent again every 15 s, so a phone that joins late
-   catches up. If OTS is down, the server runs anyway and retries every 5 s.
-   The GeoChat and delete messages were written from known ATAK output, like the shapes: check
-   them against a capture (next section) on the demo phone.
-
-## Shape format: check against a real capture
-
-`backend/src/corridor/tak/cot.py` builds shapes in the layout ATAK uses for drawn shapes (`u-d-f`, one
-`<link point>` per vertex, signed ARGB colours). It was written from known ATAK output, not from
-a schema. Before building on it:
-
-1. From `backend/`: `uv run corridor-tak listen --capture captures/`
-2. In ATAK, draw a polygon and a line and give them a name.
-3. Compare `captures/*u-d-*.xml` with what `shape()` produces and align.
-
-## OTS notes (checked in the running OTS 1.8.3 code)
-
-- A TCP client is registered, and only then receives other clients' CoT, after it sends an
-  event carrying `<contact>`. `TakClient` sends a self SA on connect and every 30 s.
-- Race in OTS: if that first SA arrives before the handler's RabbitMQ channel is open, OTS
-  records the client but never binds its queues. The client can send but receives nothing,
-  and nothing is logged. `TakClient` waits 1 s (`CONNECT_SETTLE_S`) before its first send
-  (smoke test: 3/3 failures without the delay, 6/6 passes with it). ATAK can hit the same
-  race: if it shows its own position but none of Corridor's shapes, disconnect and reconnect
-  the server in ATAK.
-- OTS does not echo a client's own CoT back to it.
-- The OTS CA is created on first start; default admin account: `administrator` / `password`.
-- Every CoT is also published to the RabbitMQ `firehose` exchange: a later option for
-  consuming everything without a TCP connection.
-
-## Development
-
-```bash
-cd backend
-uv run pytest
-uv run ruff check src tests && uv run ruff format --check src tests
-uv run mypy
-```
-
-```bash
-cd frontend
-npm run lint && npm test && npm run build
-```
-
-CI (`.github/workflows/ci.yml`) runs both on every pull request and every push to `main`, and
-also fails when `frontend/src/api/ws.gen.ts` is not regenerated from `schema/ws.schema.json`.
-Dependabot (`.github/dependabot.yml`) opens one grouped PR a week per ecosystem (actions, uv,
-npm).
+- [`docs/feature.md`](docs/feature.md): users, behaviour, safety rules, open questions.
+- [`docs/architecture.md`](docs/architecture.md): engine, planner, jamming model, WebSocket protocol.
+- [`docs/demo_script.md`](docs/demo_script.md): the timed demo runs.
+- [`docs/tak.md`](docs/tak.md): OpenTAKServer, CoT client, connecting ATAK.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): requirements, server options, checks, CI.
+- [`frontend/README.md`](frontend/README.md): front end stack, rules and layout.
