@@ -98,12 +98,20 @@ Two kinds of data, kept apart:
 
 | | Scenario | World state |
 |---|---|---|
-| Content | start time, friendly jammers (with optional initial cuts), enemy threats, the pilots and their drone, the missions known at start, the command callsign, the reference link | cuts (scheduled or confirmed), missions requested by pilots, status of each mission; enemy threats and zones to avoid added or removed by the command |
+| Content | start time, friendly jammers (with optional initial cuts), enemy threats, the pilots and their drone, the missions known at start, the command callsign, the reference link, an optional scripted timeline (`events`) | cuts (scheduled or confirmed), missions requested by pilots, status of each mission; enemy threats and zones to avoid added or removed by the command |
 | Source | `backend/scenarios/*.json`, written by hand for the demo | built by the engine from the scenario, then changed by commands |
 | Lifetime | static during a run | in memory; restart the server to reset |
 
 - Times are simulated seconds from the scenario `start_time` (for example 14:00:00Z); every
   time field ends in `_s`.
+- Scripted timeline (`events`, for a demo told the same way every time): each event fires once,
+  at the first tick past its `at_s`, as the command it mirrors: `jammer.restart` (`jammer`, by
+  its operator), `threat.add` (same fields as the command, by the command; the engine gives the
+  next free id, R2 after R1), `threat.remove` (`threat`), `inject.delay` (`mission`,
+  `delay_s`). One that cannot apply (no drone in flight to hold, jammer not cut) is skipped and
+  the command is told. `scenarios/hongkong_scripted.json`: Hong Kong with a planned harbour cut
+  (14:15 to 14:21, the command confirms it) and the jammer back on at 14:16:40, while the drone
+  crosses: it gets out by the nearest way, then flies the safe route.
 - Jammers are described by their EIRP (effective isotropic radiated power); the zone they deny
   comes from the J/S (jammer to signal) model below. Radars are discs (`radius_m`).
 - A zone to avoid (`type: "avoid"`, `radius_m`) sits with the enemy threats: reported activity
@@ -462,6 +470,7 @@ Rules enforced today:
 | `route.choose` | unknown mission, not `planned`, no plan yet, actor is not its pilot (the command answers cuts, it does not pick routes), no such choice in the plan, deadline already past, a cut it needs overlaps another cut |
 | `route.decide` | unknown mission, actor is not the command, no pending request |
 | `cut.cancel` | unknown cut |
+| `jammer.restart` | unknown friendly jammer, actor is neither its operator nor the command, the jammer is not cut now |
 | `mission.request` | actor is not a pilot |
 | `mission.update` | unknown mission, mission not in `planned`, actor is not its pilot |
 | `mission.launch` | unknown mission, mission not in `planned`, actor is not its pilot (the command only answers cut requests) |
@@ -517,8 +526,9 @@ Rules enforced today:
   cancelled, new threat on the route) the engine requests a `fallback` plan from the drone
   position (`plan_fallback`: no cut, take off now) and switches the flight to it. A drone the new
   zone already covers first flies straight to the nearest cell free at its level
-  (`escape_cell`), then the search starts there. A threat away from the rest of the route
-  changes nothing in flight. The pilot gets a notification at each step. No safe route: the
+  (`escape_cell`), then the search starts there; the safety rules ignore that escape leg
+  (`Flight.escape_until_s`). It is also what happens when a jammer comes back on over the drone
+  (`jammer.restart`). A threat away from the rest of the route changes nothing in flight. The pilot gets a notification at each step. No safe route: the
   drone keeps its route and the pilot is told.
 
 ## Planner
@@ -847,6 +857,7 @@ and its cuts. Every change goes out as `route.request` and is kept for the snaps
 |---|---|---|
 | `cut.schedule` | done | jammer, start, end, optional mission it is asked for |
 | `cut.cancel` | done | cut id |
+| `jammer.restart` | done | friendly jammer id: back on now, before the end of its cut (the cuts covering now are cancelled); its operator or the command; "Back on now" on a running cut |
 | `cut.confirm` | done | cut id; command only |
 | `mission.request` | done | `launch`, `target`, `departure_s` (a past one means as soon as possible); the mission id is `M<n>`, the first one free |
 | `mission.update` | done | mission id, `launch`, `target`, `departure_s`, optional `cross_radars` (routes may fly through radar zones, never jammers; omitted keeps it); only while `planned`; drops the route request and its cuts |
