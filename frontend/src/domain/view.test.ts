@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { Cut, Grid, Mission, Position, RoutePoint, Zone } from '../api/protocol'
+import type { Cut, Grid, Mission, Position, RouteReason, RoutePoint, Zone } from '../api/protocol'
 import {
+  reasonTag,
+  reasonText,
   bearingDeg,
   clockLabel,
   distanceM,
@@ -217,5 +219,29 @@ describe('missionSpan', () => {
 
   it('falls back to departure plus full battery without a plan', () => {
     expect(missionSpan(mission)).toEqual([600, 2400])
+  })
+})
+
+describe('route reasons', () => {
+  const label = (t: number) => `T${t}`
+  const reason = (r: Partial<RouteReason>): RouteReason => ({
+    threat: 'J3',
+    kind: 'friendly_jammer',
+    effect: 'avoided',
+    enter_s: null,
+    exit_s: null,
+    ...r,
+  })
+
+  it('says what the route does about each zone', () => {
+    expect(reasonText(reason({ kind: 'enemy_jammer', threat: 'E1' }), label)).toBe('Around enemy jammer E1')
+    expect(reasonText(reason({ effect: 'crossed_in_cut', enter_s: 10, exit_s: 20 }), label)).toBe(
+      'Through jammer J3 during its cut, T10 to T20',
+    )
+    expect(reasonText(reason({ effect: 'crossed', enter_s: 1, exit_s: 2 }), label)).toContain('control link at risk')
+    expect(reasonText(reason({ kind: 'link', threat: 'LINK', effect: 'climbed_over' }), label)).toBe(
+      "Over the area out of the pilot's reach (flies above its zone)",
+    )
+    expect(reasonTag(reason({ effect: 'crossed_in_cut' }))).toBe('J3 in cut')
   })
 })

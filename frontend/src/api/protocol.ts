@@ -25,5 +25,6 @@ export type ProfilePoint = G.ProfilePoint
 export type DroneState = G.DroneState
 export type RouteChoice = G.RouteChoice
 export type ChoiceKind = G.RouteChoice['kind']
+export type RouteReason = G.RouteReason
 export type RouteRequest = G.RouteRequest
 export type OnTimeout = G.RouteRequest['on_timeout']

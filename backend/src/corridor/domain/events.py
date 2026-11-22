@@ -152,6 +152,28 @@ class ProposedCut(Model):
     end_s: float
 
 
+ReasonKind = Literal["friendly_jammer", "enemy_jammer", "radar", "avoid", "link"]
+"""A zone kind, or link: where the pilot's signal is too weak (3D)."""
+
+ReasonEffect = Literal["avoided", "climbed_over", "crossed_in_cut", "crossed"]
+"""What the route does about a zone. avoided: around it. climbed_over (3D): over it, at a level
+above the zone. crossed_in_cut: through a friendly jammer's zone while it is cut. crossed:
+through the zone with the threat on (a radar the mission may cross, a zone to avoid, a jammer
+crossed anyway)."""
+
+
+class RouteReason(Model):
+    """One zone that shapes the route: on the straight line from launch to target, or crossed."""
+
+    threat: str = Field(description="Threat id; LINK for the cells out of the pilot's reach.")
+    kind: ReasonKind
+    effect: ReasonEffect
+    enter_s: float | None = Field(
+        default=None, description="Crossings: when the route enters the zone."
+    )
+    exit_s: float | None = Field(default=None, description="Crossings: when it leaves it.")
+
+
 class RouteChoice(Model):
     """One route the pilot may pick. Only ``safe`` is flyable without the command's answer."""
 
@@ -169,6 +191,9 @@ class RouteChoice(Model):
     worth_asking: bool = Field(
         default=True,
         description="False: shown for comparison, but saves too little to ask the command a cut.",
+    )
+    reasons: list[RouteReason] = Field(
+        default_factory=list, description="Zones that shape this route, in order along the way."
     )
 
 
@@ -188,6 +213,10 @@ class PlanUpdated(Model):
     choices: list[RouteChoice] = Field(
         default_factory=list,
         description="Routes the pilot may pick, fastest first, safe last. Empty once it flies.",
+    )
+    reasons: list[RouteReason] = Field(
+        default_factory=list,
+        description="Zones that shape the optimised route, in order along the way.",
     )
 
 
