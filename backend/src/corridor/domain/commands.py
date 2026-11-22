@@ -175,6 +175,15 @@ class RemoveThreat(Model):
     threat: str
 
 
+class SwitchRelay(Model):
+    """The command switches a relay on or off; missions on its bands get new routes."""
+
+    type: Literal["relay.switch"] = "relay.switch"
+    actor: str
+    relay: str
+    on: bool
+
+
 Command = Annotated[
     ScheduleCut
     | CancelCut
@@ -187,6 +196,7 @@ Command = Annotated[
     | SetClock
     | InjectDelay
     | AddThreat
-    | RemoveThreat,
+    | RemoveThreat
+    | SwitchRelay,
     Field(discriminator="type"),
 ]

@@ -506,8 +506,9 @@ def _latest_useful_takeoff(
 ) -> float:
     """Past this, even a straight flight reaches every cut zone after its window closed.
 
-    For a directional jammer the zone lies within its main disc, so the distance to that disc
-    is a lower bound: the sweep may go a little too far, never stop too early.
+    For a directional jammer the zone lies within its main disc, and with relays within its
+    zone against the pilot, so the distance to that disc is a lower bound: the sweep may go a
+    little too far, never stop too early.
     """
     latest = mission.departure_s
     half_diagonal = cell_m * math.sqrt(2) / 2

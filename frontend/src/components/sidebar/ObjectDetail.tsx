@@ -1,20 +1,24 @@
-// One object in detail: a friendly jammer (its cuts, the missions it concerns) or an enemy threat.
-import { Badge, Button, Stack, Text, UnstyledButton } from '@mantine/core'
+// One object in detail: a friendly jammer (its cuts, the missions it concerns), a relay or an
+// enemy threat.
+import { Badge, Button, Stack, Switch, Text, UnstyledButton } from '@mantine/core'
+import { send } from '../../api/client'
 import { formatPosition, friendlyZoneState } from '../../domain/view'
 import { useLiveSimTime } from '../../hooks/useSimNow'
-import { useStore } from '../../store'
+import { type ObjectKind, useStore } from '../../store'
 import { THREAT_COLOR } from '../colors'
 import { RadioIcon } from '../Icons'
 import { CutRow, PanelHeader, SectionTitle } from './parts'
 import { threatSummary } from './threat'
 
 interface Props {
-  readonly kind: 'jammer' | 'threat'
+  readonly kind: ObjectKind
   readonly id: string
 }
 
 export function ObjectDetail({ kind, id }: Props) {
-  return kind === 'jammer' ? <JammerDetail id={id} /> : <ThreatDetail id={id} />
+  if (kind === 'jammer') return <JammerDetail id={id} />
+  if (kind === 'relay') return <RelayDetail id={id} />
+  return <ThreatDetail id={id} />
 }
 
 const STATE_TEXT = {
@@ -71,6 +75,41 @@ function JammerDetail({ id }: { readonly id: string }) {
 
       <SectionTitle>Missions it concerns</SectionTitle>
       <ConcernedMissions match={(jammers) => jammers.includes(id)} />
+    </Stack>
+  )
+}
+
+function RelayDetail({ id }: { readonly id: string }) {
+  const scenario = useStore((s) => s.snapshot?.scenario)
+  const openList = useStore((s) => s.openList)
+  const isCommand = useStore((s) => s.snapshot?.viewer.role === 'command')
+  const relay = scenario?.relays.find((r) => r.id === id)
+  if (!relay) return <Gone onBack={openList} />
+
+  return (
+    <Stack gap="xs">
+      <PanelHeader
+        title={`Relay ${id}`}
+        badge={<Badge color={relay.on ? 'cyan' : 'gray'}>{relay.on ? 'on' : 'off'}</Badge>}
+        onBack={openList}
+      />
+      {isCommand && (
+        <Switch
+          size="sm"
+          color="cyan"
+          checked={relay.on}
+          label={relay.on ? 'Relaying: switch off to replan without it' : 'Off: switch on to replan with it'}
+          onChange={(e) => send({ type: 'relay.switch', relay: id, on: e.currentTarget.checked })}
+        />
+      )}
+      <Text size="xs" c="dimmed">
+        {relay.bands.join(', ')} · {relay.eirp_w} W EIRP · mast {relay.mast_m} m
+      </Text>
+      <Text size="xs" c="dimmed">{formatPosition(relay.pos)}</Text>
+      <Text size="xs" c="dimmed">
+        Repeats the control link of every drone on its bands: a drone keeps its link where the relay
+        or its pilot is heard above the jamming.
+      </Text>
     </Stack>
   )
 }

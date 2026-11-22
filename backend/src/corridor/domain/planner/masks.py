@@ -80,10 +80,19 @@ def shape_mask(grid: Grid, shape: ThreatShape, frame: LocalFrame) -> Mask:
     """Cells that may reach the zone of ``shape``.
 
     A cell is kept for the main disc if it may reach both that disc and the beam, and for the
-    sidelobe disc if it may reach both that disc and the outside of the beam. Being near each
-    of two sets does not mean being near their intersection, so this may forbid a few more
+    sidelobe disc if it may reach both that disc and the outside of the beam. With relays, a
+    cell is kept if it may reach the zone against every connection point. Being near each of
+    several sets does not mean being near their intersection, so this may forbid a few more
     cells than needed, never fewer.
     """
+    mask = _part_mask(grid, shape, frame)
+    for relay in shape.relays:
+        mask &= _part_mask(grid, relay, frame)
+    return mask
+
+
+def _part_mask(grid: Grid, shape: ThreatShape, frame: LocalFrame) -> Mask:
+    """Cells that may reach the zone of ``shape`` against its own connection point."""
     main = disc_mask(grid, shape.disc, frame)
     if shape.beam is None:
         return main

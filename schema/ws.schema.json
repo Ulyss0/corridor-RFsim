@@ -292,6 +292,7 @@
               "mission.launch": "#/$defs/LaunchMission",
               "mission.request": "#/$defs/RequestMission",
               "mission.update": "#/$defs/UpdateMission",
+              "relay.switch": "#/$defs/SwitchRelay",
               "route.choose": "#/$defs/ChooseRoute",
               "route.decide": "#/$defs/DecideRoute",
               "threat.add": "#/$defs/AddThreat",
@@ -335,6 +336,9 @@
             },
             {
               "$ref": "#/$defs/RemoveThreat"
+            },
+            {
+              "$ref": "#/$defs/SwitchRelay"
             }
           ],
           "title": "Command"
@@ -1631,6 +1635,92 @@
       "title": "ReferenceLink",
       "type": "object"
     },
+    "Relay": {
+      "additionalProperties": false,
+      "description": "Friendly relay antenna: a second connection point for the control link of every drone on\nits ``bands``. Not jammed itself and always linked to the pilot (backhaul not modelled).",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "pos": {
+          "$ref": "#/$defs/Position"
+        },
+        "eirp_w": {
+          "description": "EIRP of the relayed control link, watts.",
+          "exclusiveMinimum": 0,
+          "title": "Eirp W",
+          "type": "number"
+        },
+        "bands": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Bands",
+          "type": "array"
+        },
+        "mast_m": {
+          "default": 10.0,
+          "description": "Antenna height above the ground, metres (3D).",
+          "exclusiveMinimum": 0,
+          "title": "Mast M",
+          "type": "number"
+        },
+        "on": {
+          "default": true,
+          "description": "Off, the relay is ignored. The command switches it live (`relay.switch`).",
+          "title": "On",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "pos",
+        "eirp_w",
+        "bands",
+        "mast_m",
+        "on"
+      ],
+      "title": "Relay",
+      "type": "object"
+    },
+    "RelaySwitched": {
+      "additionalProperties": false,
+      "description": "The command switched a relay on or off. Every client gets a new snapshot right after:\nzones, grids and scopes may all have changed.",
+      "properties": {
+        "type": {
+          "const": "relay.switched",
+          "default": "relay.switched",
+          "title": "Type",
+          "type": "string"
+        },
+        "relay": {
+          "title": "Relay",
+          "type": "string"
+        },
+        "on": {
+          "title": "On",
+          "type": "boolean"
+        },
+        "missions": {
+          "description": "Missions on its bands.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Missions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "relay",
+        "on",
+        "missions"
+      ],
+      "title": "RelaySwitched",
+      "type": "object"
+    },
     "RemoveThreat": {
       "additionalProperties": false,
       "description": "The command removes an enemy threat or a zone to avoid, from the file or added.",
@@ -2119,6 +2209,14 @@
           "title": "Enemy Threats",
           "type": "array"
         },
+        "relays": {
+          "description": "Friendly relay antennas extending the control link.",
+          "items": {
+            "$ref": "#/$defs/Relay"
+          },
+          "title": "Relays",
+          "type": "array"
+        },
         "terrain": {
           "$ref": "#/$defs/Terrain"
         },
@@ -2146,6 +2244,7 @@
         "command_callsign",
         "friendly_jammers",
         "enemy_threats",
+        "relays",
         "terrain",
         "pilots",
         "missions"
@@ -2230,6 +2329,7 @@
                   "mission.updated": "#/$defs/MissionUpdated",
                   "notification": "#/$defs/Notification",
                   "plan.updated": "#/$defs/PlanUpdated",
+                  "relay.switched": "#/$defs/RelaySwitched",
                   "route.request": "#/$defs/RouteRequested",
                   "threat.added": "#/$defs/ThreatAdded",
                   "threat.removed": "#/$defs/ThreatRemoved"
@@ -2260,6 +2360,9 @@
                 },
                 {
                   "$ref": "#/$defs/ThreatRemoved"
+                },
+                {
+                  "$ref": "#/$defs/RelaySwitched"
                 },
                 {
                   "$ref": "#/$defs/MissionStatusChanged"
@@ -2414,6 +2517,38 @@
         "cuts"
       ],
       "title": "Snapshot",
+      "type": "object"
+    },
+    "SwitchRelay": {
+      "additionalProperties": false,
+      "description": "The command switches a relay on or off; missions on its bands get new routes.",
+      "properties": {
+        "type": {
+          "const": "relay.switch",
+          "default": "relay.switch",
+          "title": "Type",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "relay": {
+          "title": "Relay",
+          "type": "string"
+        },
+        "on": {
+          "title": "On",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "actor",
+        "relay",
+        "on"
+      ],
+      "title": "SwitchRelay",
       "type": "object"
     },
     "Terrain": {

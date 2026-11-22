@@ -4,13 +4,15 @@ import pytest
 from pydantic import ValidationError
 
 from corridor.domain.geo import LocalFrame
-from corridor.domain.scenario import Scenario
+from corridor.domain.planner.masks import shape_mask
+from corridor.domain.scenario import Relay, Scenario
 from corridor.domain.zones import (
     GRID_MARGIN_M,
     RING_VERTICES,
     Beam,
     ThreatShape,
     Zone,
+    _ring,
     angle_off_axis,
     azimuth_to_angle,
     js_disc,
@@ -324,3 +326,70 @@ def test_nominal_footprints_grow_by_the_position_error(scenario: Scenario) -> No
     exact, wide = radii(scenario), radii(with_errors(scenario, R1=300, E1=200))
     assert wide["R1"] == pytest.approx(exact["R1"] + 300, abs=1)
     assert wide["E1"] == pytest.approx(exact["E1"] + 200, abs=1)
+
+
+def with_relay(scenario: Scenario, x: float, y: float, eirp_w: float = 10.0) -> Scenario:
+    """``scenario`` with one relay on 2.4 GHz at (x, y) in M1's frame."""
+    pos = LocalFrame(scenario.missions[0].launch).to_position(x, y)
+    relay = Relay(id="RL1", pos=pos, eirp_w=eirp_w, bands=["2.4GHz"])
+    return scenario.model_copy(update={"relays": [relay]})
+
+
+def test_a_relay_near_the_jammer_shrinks_its_zone(scenario: Scenario) -> None:
+    """J/S is the minimum over the connection points: the zone is the intersection of the zone
+    against the pilot and the zone against the relay."""
+    alone = shape_of(scenario, "J3")
+    jx, jy = LocalFrame(scenario.missions[0].launch).to_xy(scenario.friendly_jammers[0].pos)
+    relayed = shape_of(with_relay(scenario, jx + 1500, jy), "J3")
+    assert len(relayed.relays) == 1 and relayed.origin == (jx, jy)
+    assert relayed.contains(jx, jy)
+    # Between the jammer and the relay: jammed from the pilot, fine through the relay.
+    probe = (jx + 600, jy)
+    assert alone.contains(*probe) and not relayed.contains(*probe)
+    # Everything the relayed zone forbids, the pilot-only zone forbids too.
+    for point in around((jx, jy), alone.disc.radius_m, 64):
+        if relayed.contains(*point):
+            assert alone.contains(*point)
+
+
+def test_the_ring_of_a_relayed_zone_lies_inside_both_zones(scenario: Scenario) -> None:
+    jx, jy = LocalFrame(scenario.missions[0].launch).to_xy(scenario.friendly_jammers[0].pos)
+    relayed = shape_of(with_relay(scenario, jx + 1500, jy), "J3")
+    for x, y in _ring(relayed):
+        # Just inside the boundary along the ray from the jammer: forbidden by every part.
+        inward = (jx + 0.99 * (x - jx), jy + 0.99 * (y - jy))
+        assert all(part.contains(*inward) for part in relayed.parts())
+    assert len({round(math.hypot(x - jx, y - jy)) for x, y in _ring(relayed)}) > 2
+
+
+def test_a_relay_off_the_band_changes_nothing(scenario: Scenario) -> None:
+    relayed = with_relay(scenario, 0, 2000)
+    relay = relayed.relays[0].model_copy(update={"bands": ["5.8GHz"]})
+    assert shape_of(relayed.model_copy(update={"relays": [relay]}), "J3") == shape_of(
+        scenario, "J3"
+    )
+
+
+def test_a_relay_on_the_jammer_is_left_out(scenario: Scenario) -> None:
+    jx, jy = LocalFrame(scenario.missions[0].launch).to_xy(scenario.friendly_jammers[0].pos)
+    assert shape_of(with_relay(scenario, jx, jy), "J3") == shape_of(scenario, "J3")
+
+
+def test_the_relayed_mask_forbids_fewer_cells(scenario: Scenario) -> None:
+    m1 = scenario.missions[0]
+    jx, jy = LocalFrame(m1.launch).to_xy(scenario.friendly_jammers[0].pos)
+    relayed = with_relay(scenario, jx + 1500, jy)
+    grid = mission_constraints(scenario, m1, 100).grid
+    frame = LocalFrame(m1.launch)
+    alone = shape_mask(grid, shape_of(scenario, "J3"), frame)
+    shrunk = shape_mask(grid, shape_of(relayed, "J3"), frame)
+    assert shrunk.sum() < alone.sum()
+    assert not (shrunk & ~alone).any()
+
+
+def test_relay_ids_must_be_unique(scenario: Scenario) -> None:
+    relayed = with_relay(scenario, 0, 0)
+    data = relayed.model_dump(mode="json")
+    data["relays"][0]["id"] = "J3"
+    with pytest.raises(ValidationError, match="duplicate ids"):
+        Scenario.model_validate(data)

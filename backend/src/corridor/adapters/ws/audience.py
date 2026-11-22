@@ -28,6 +28,7 @@ from corridor.domain.events import (
     MissionUpdated,
     Notification,
     PlanUpdated,
+    RelaySwitched,
     RouteRequested,
     ThreatAdded,
     ThreatRemoved,
@@ -116,6 +117,8 @@ class Audience:
                 return event.mission.id in scope.missions
             case ThreatAdded() | ThreatRemoved():
                 return not scope.missions.isdisjoint(event.missions)
+            case RelaySwitched():
+                return True  # relays are shown to every role
             case RouteRequested():
                 return event.request.mission in scope.missions
             case _:

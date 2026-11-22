@@ -153,6 +153,22 @@ Two kinds of data, kept apart:
   error e. A J/S disc grows by e × k / |k - 1| (exact on the side away from the pilot, a little
   generous on the pilot side); a k < 1 bubble shrinks by as much, and server start fails if
   nothing is left. Nominal footprints are centred on the threat, so they grow by e.
+- **Relays** (`relays`, optional): friendly relay antennas (`id`, `pos`, `eirp_w` of the
+  relayed control link, `bands`, `mast_m` default 10 m). A relay is a second connection point
+  for every drone on its bands: the drone uses the strongest control signal, so J/S is the
+  minimum of the J/S against the pilot and against each relay. In 2D a jammer's zone becomes
+  the intersection of its circles of Apollonius against each connection point (drawn as the
+  nearest exit along each ray from the jammer; a relay bubble, k < 1, is left out of the
+  drawing only), and a relay the model cannot draw against is left out for that jammer (the
+  zone only grows). In 3D the best signal over the pilot and the relays feeds both the J/S and
+  the minimum signal, so relays also extend the drone's range; an enemy jammer's position margin
+  is applied per connection point before intersecting. 2D has no minimum signal: there relays
+  only shrink jammer zones. Assumed: a relay is always linked to the pilot and is not jammed
+  itself (open decision). `on` (default true): the command switches a relay on or off live
+  (`relay.switch`); zones are recomputed and every planned mission on its bands is replanned,
+  a drone in flight falls back only if the safety rule sees its route lose the link. Shown on the
+  map and in the Objects tab to every role. Not yet: `/api/rf/heatmap` and
+  `/api/rf/probe` still use the pilot alone.
 - Several missions share the jammers, threats and cuts. A mission carries the drone, the pilot
   callsign (the pilot stands at the launch point), speed, battery and earliest departure.
 - **Pilots and missions.** `pilots` lists each pilot callsign with its drone (`id`, `band`,
@@ -470,6 +486,7 @@ Rules enforced today:
 | `inject.delay` | unknown mission, no drone in flight |
 | `threat.add` | actor is not the command; fields not matching the kind (pydantic); a zone the J/S model cannot draw (jammer on a pilot) |
 | `threat.remove` | actor is not the command, unknown threat |
+| `relay.switch` | actor is not the command, unknown relay, relay already in that state |
 | any | `actor` is not the callsign the connection gave (WebSocket adapter) |
 
 ## Engine
@@ -852,6 +869,7 @@ and its cuts. Every change goes out as `route.request` and is kept for the snaps
 | `cut.scheduled`, `cut.confirmed`, `cut.cancelled` | done | the cut (`requested_for`: the mission it was asked for, if any) |
 | `mission.created` | done | the full mission (drone fields from the pilot); a new `snapshot` follows, then a notification to the pilot and the first `plan.updated` |
 | `mission.updated` | done | the mission with its new points and departure; a new `snapshot` follows for every client (plan back to null until the next `plan.updated`) |
+| `relay.switched` | done | the relay, `on` and the missions on its bands; seen by every role, a new `snapshot` follows, then notifications, then the new plans |
 | `threat.added`, `threat.removed` | done | the threat (or its id) and the missions it concerns; a new `snapshot` follows, then notifications to the command and the pilots, then the new `plan.updated` |
 | `mission.status` | done | mission id; `planned`, `flying`, `arrived` |
 | `notification` | done | `to` (callsign), text, optional action: `cut.confirm` with the cut, or `route.decide` with the mission whose request awaits an answer |
@@ -877,6 +895,7 @@ and its cuts. Every change goes out as `route.request` and is kept for the snaps
 | `inject.delay` | done | mission id, `delay_s`: hold the flying drone where it is (demo twist) |
 | `threat.add` | done | `kind` (`radar`, `jammer`, `avoid`), `pos`; `radius_m` for a radar or a zone to avoid, `eirp_w` and `bands` for a jammer; optional `position_error_m` (not for a zone to avoid) |
 | `threat.remove` | done | threat id (from the file or added) |
+| `relay.switch` | done | relay id, `on` (command only) |
 
 **Contract.** `schema/ws.schema.json` is generated from the pydantic models
 (from `backend/`: `uv run corridor-schema > ../schema/ws.schema.json`) and a test fails when it is out of date. Its
@@ -918,6 +937,7 @@ The defaults below do not change the layout; they live in the planner or in `saf
 | Battery left for a fallback | `plan_fallback` allows a full `battery_max_s`; the battery already used is not deducted |
 | Replan lead time | 3 wall-clock seconds (`PLAN_LEAD_WALL_S`); two queued plans can exceed it |
 | Pilot minimum signal (41) | `link_min_dbm` per drone, default -100 dBm (quoted sensitivities of drone control receivers run from about -95 to -110 dBm; to set per drone with the team). 3D only: in 2D free space the range at -100 dBm is far past any grid |
+| Relay backhaul | a relay is always linked to the pilot and never jammed itself; its own link to the pilot (radio or wired) is not modelled. Hand-over between connection points is instant |
 | Directional jammers | hard beam edge, sidelobes required (`sidelobe_db`), friendly jammers only, k < 1 rejected, not used in `demo.json` |
 | Route smoothing | greedy string pulling, farthest point first, between the points of the SIPP route only (a better line through the middle of a straight run can be missed); holds kept |
 | Planner choices made in step 3 | SIPP and a 30 s / 5 s takeoff sweep, cuts must save more than 1 s, cells forbidden if any part may touch a zone, radar is a hard ban, margins 30 s / 60 s as constants in `plan.py` |
