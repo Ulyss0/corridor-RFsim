@@ -540,17 +540,19 @@ class Engine:
             raise CommandRejected(f"unknown cut {command.cut}")
         # Several drones may rely on the cut: tell every pilot still concerned.
         label = self.scenario.clock_label
+        reason_suffix = f": {command.reason}" if command.reason else ""
         text = (
             f"Cut {cut.jammer} {label(cut.start_s)} to {label(cut.end_s)} "
-            f"cancelled by {command.actor}."
+            f"cancelled by {command.actor}{reason_suffix}."
         )
+        recipients = [
+            r.mission.pilot_callsign
+            for r in self._concerned(cut.jammer)
+            if self.state.missions[r.mission.id] != "arrived"
+        ]
         return [
             CutCancelled(cut=cut),
-            *(
-                Notification(to=r.mission.pilot_callsign, text=text)
-                for r in self._concerned(cut.jammer)
-                if self.state.missions[r.mission.id] != "arrived"
-            ),
+            *(Notification(to=pilot, text=text) for pilot in recipients if pilot != command.actor),
         ]
 
     def _confirm_cut(self, command: ConfirmCut) -> list[Event]:

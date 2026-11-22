@@ -35,6 +35,7 @@ class CancelCut(Model):
     type: Literal["cut.cancel"] = "cut.cancel"
     actor: str
     cut: str
+    reason: str | None = Field(default=None, description="Reason for cancellation or refusal.")
 
 
 class ConfirmCut(Model):

@@ -149,3 +149,29 @@ export const ZoomOutIcon = (p: IconProps) => (
     <line x1="8" y1="11" x2="14" y2="11" />
   </Icon>
 )
+
+export const XIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <line x1="18" y1="6" x2="6" y2="18" />
+    <line x1="6" y1="6" x2="18" y2="18" />
+  </Icon>
+)
+
+export const BombIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="11" cy="13" r="8" />
+    <path d="m17 7 3-3" />
+    <path d="M19 4h2" />
+    <path d="M20 5V3" />
+    <path d="M8 13a3 3 0 0 1 3-3" />
+  </Icon>
+)
+
+export const SignalIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M2 20h.01" />
+    <path d="M7 20v-4" />
+    <path d="M12 20v-8" />
+    <path d="M17 20V4" />
+  </Icon>
+)
