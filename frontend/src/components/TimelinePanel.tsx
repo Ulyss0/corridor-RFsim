@@ -5,7 +5,7 @@ import { useEffect, useRef } from 'react'
 import { ActionIcon, Button, Group, Text, Tooltip } from '@mantine/core'
 import { Timeline } from 'vis-timeline/standalone'
 import 'vis-timeline/styles/vis-timeline-graph2d.min.css'
-import { clockLabel, missionOf, missionSpan, type Phase, routePhases } from '../domain/view'
+import { clockLabel, flownRoute, missionOf, missionSpan, type Phase, routePhases } from '../domain/view'
 import { useLiveSimTime } from '../hooks/useSimNow'
 import { useStore } from '../store'
 import { CrosshairIcon, RotateCcwIcon, ZoomInIcon, ZoomOutIcon } from './Icons'
@@ -120,7 +120,7 @@ export function TimelinePanel() {
         })
 
     for (const [mission, view] of Object.entries(missions)) {
-      const route = view.plan?.optimised_route ?? []
+      const route = flownRoute(view)
       if (route.length > 0) {
         const m = snapshot?.missions.find((sm) => sm.constraints.mission === mission)
         const zones = m?.constraints.zones ?? []
@@ -138,7 +138,8 @@ export function TimelinePanel() {
     const state = useStore.getState()
     const mission = state.snapshot ? missionOf(state.snapshot.scenario, focus.id) : undefined
     if (!state.snapshot || !mission) return
-    const [from, to] = missionSpan(mission, state.missions[focus.id]?.plan?.optimised_route)
+    const view = state.missions[focus.id]
+    const [from, to] = missionSpan(mission, view ? flownRoute(view) : undefined)
     const pad = Math.max(60, (to - from) * 0.1)
     const st = state.snapshot.scenario.start_time
     timeline.current?.setWindow(toTl(st, Math.max(0, from - pad)), toTl(st, to + pad), { animation: true })

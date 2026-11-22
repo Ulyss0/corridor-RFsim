@@ -64,11 +64,10 @@ src/
   "lat, lon", or picked again with the crosshair button. Departure: ASAP, in 5 or 15 min, or at a
   UTC time. A straight-line estimate (distance, time, battery) warns when the target is out of
   range. The new mission arrives with a fresh snapshot, gets selected, and the form closes.
-- "Change points" in the detail of a mission still on the ground (its pilot or the command) opens the same
-  form with its points and "Keep" as departure; it sends `mission.update`.
-- Map: the launch and target of a mission still on the ground (its pilot or the command) can be
-  dragged; dropping one sends `mission.update` at once, departure kept. The form's points can be
-  dragged too.
+- Map: a click on the route, launch or target of a mission still on the ground (its pilot only)
+  opens the same form, floating on the map, with its points and "Keep" as departure; it sends
+  `mission.update`. Points are never dragged: they are typed (GPS) or picked on the map with
+  the form's target button.
 - Notification feed with the confirm button from `notification.action`.
 - Timeline: cuts per jammer in view, one row per drone in view with its route segments (`ground` / `fly` / `hover`), orange cursor on
   live time. Drag the cursor to scrub: map and zones follow; "Back to live" resets.

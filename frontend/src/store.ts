@@ -4,6 +4,7 @@
 import { create } from 'zustand'
 import type { ConnStatus } from './api/socket'
 import type {
+  ChoiceKind,
   ClockState,
   Cut,
   MissionView,
@@ -86,6 +87,10 @@ interface State {
   /** EW cut form; null = closed. */
   cutDraft: CutDraft | null
   focus: Focus | null
+  /** Route choice the pointer is on (card or map), drawn on top while it stays there. */
+  focusedChoice: ChoiceKind | null
+  /** Route choice clicked (card or map); null = the first one, the fastest. */
+  selectedChoice: ChoiceKind | null
 
   setConn: (conn: ConnStatus) => void
   signIn: (callsign: string) => void
@@ -112,6 +117,8 @@ interface State {
   setListTab: (tab: 'missions' | 'objects') => void
   openCut: (draft: CutDraft) => void
   closeCut: () => void
+  focusChoice: (kind: ChoiceKind | null) => void
+  selectChoice: (kind: ChoiceKind | null) => void
 }
 
 let feedId = 0
@@ -130,6 +137,8 @@ const SESSION = {
   listTab: 'missions',
   cutDraft: null,
   focus: null,
+  focusedChoice: null,
+  selectedChoice: null,
 } satisfies Partial<State>
 
 export const useStore = create<State>((set, get) => ({
@@ -143,7 +152,7 @@ export const useStore = create<State>((set, get) => ({
   setConn: (conn) => set({ conn }),
   signIn: (callsign) => set({ ...SESSION, callsign, signInError: null }),
   signOut: (reason) => set({ ...SESSION, callsign: '', signInError: reason }),
-  selectMission: (selectedMission) => set({ selectedMission }),
+  selectMission: (selectedMission) => set({ selectedMission, selectedChoice: null, focusedChoice: null }),
   setViewTime: (viewTimeS) => set({ viewTimeS }),
   setError: (lastError) => set({ lastError }),
   openRequest: (launch) => {
@@ -174,6 +183,8 @@ export const useStore = create<State>((set, get) => ({
   setListTab: (listTab) => set({ listTab }),
   openCut: (cutDraft) => set({ cutDraft, requestDraft: NO_DRAFT }),
   closeCut: () => set({ cutDraft: null }),
+  focusChoice: (focusedChoice) => set({ focusedChoice }),
+  selectChoice: (selectedChoice) => set({ selectedChoice }),
 
   apply: (msg) => {
     const p = msg.payload
@@ -253,6 +264,13 @@ export const useStore = create<State>((set, get) => ({
         return
       case 'plan.updated':
         set(patchMission(p.mission, { plan: p }))
+        return
+      case 'route.request':
+        // A refusal puts the detour back on top: drop the selection that pointed at the refused route.
+        set({
+          ...patchMission(p.request.mission, { request: p.request }),
+          ...(p.request.status === 'refused' ? { selectedChoice: null, focusedChoice: null } : {}),
+        })
         return
       case 'drone.state':
         set(patchMission(p.mission, { drone: p }))

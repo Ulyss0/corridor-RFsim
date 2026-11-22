@@ -201,6 +201,10 @@ def mission_shapes(scenario: Scenario, mission: Mission) -> list[ThreatShape]:
     Includes threats far from the mission; ``mission_constraints`` keeps those that touch its
     grid. A zone outside the grid forbids no cell, so the planner may use them all. Enemy zones
     include the position error.
+
+    A pilot standing inside the full zone of an omnidirectional friendly jammer (its reference
+    footprint, ``nominal_zones``) starts the mission in the jamming: that full zone is then the
+    mission's zone for this jammer, and the drone leaves it only during a cut.
     """
     frame = LocalFrame(mission.launch)
 
@@ -220,6 +224,10 @@ def mission_shapes(scenario: Scenario, mission: Mission) -> list[ThreatShape]:
             continue
         main = disc(j.pos, j.eirp_w)
         if j.antenna is None:
+            x, y = frame.to_xy(j.pos)
+            full = nominal_radius(scenario, j.eirp_w)
+            if math.hypot(x, y) < full:
+                main = Disc(x, y, full, "inside")
             zones.append(ThreatShape(j.id, "friendly_jammer", main))
         else:
             sidelobe = disc(j.pos, j.eirp_w * 10 ** (j.antenna.sidelobe_db / 10))
@@ -237,8 +245,14 @@ def mission_shapes(scenario: Scenario, mission: Mission) -> list[ThreatShape]:
 
 
 def forbidden_shapes(scenario: Scenario, mission: Mission) -> list[ThreatShape]:
-    """``mission_shapes`` the planner may not enter: all but the zones to avoid."""
-    return [z for z in mission_shapes(scenario, mission) if z.kind != "avoid"]
+    """``mission_shapes`` the planner may not enter: all but the zones to avoid, and but the
+    radars when the pilot chose to fly through them (``Mission.cross_radars``). Jammers are
+    always forbidden."""
+    return [
+        z
+        for z in mission_shapes(scenario, mission)
+        if z.kind != "avoid" and not (mission.cross_radars and z.kind == "radar")
+    ]
 
 
 def mission_constraints(scenario: Scenario, mission: Mission, cell_m: float) -> MissionConstraints:
@@ -273,16 +287,33 @@ def constraints_by_mission(scenario: Scenario, cell_m: float) -> dict[str, Missi
     return {m.id: mission_constraints(scenario, m, cell_m) for m in scenario.missions}
 
 
+def nominal_radius(scenario: Scenario, eirp_w: float) -> float:
+    """Radius of a jammer's full zone, against ``scenario.reference_link``."""
+    link = scenario.reference_link
+    t = 10 ** (scenario.js_threshold_db / 10)
+    return link.range_m * math.sqrt(eirp_w / (t * link.eirp_w))
+
+
+def starts_inside(scenario: Scenario, mission: Mission) -> list[str]:
+    """Omnidirectional friendly jammers on the mission band whose full zone holds the launch."""
+    frame = LocalFrame(mission.launch)
+    return [
+        j.id
+        for j in scenario.friendly_jammers
+        if mission.band in j.bands
+        and j.antenna is None
+        and math.hypot(*frame.to_xy(j.pos)) < nominal_radius(scenario, j.eirp_w)
+    ]
+
+
 def nominal_zones(scenario: Scenario) -> list[Zone]:
     """Footprint of every threat against ``scenario.reference_link``, for the command view.
 
     The footprint is centred on the jammer, so a position error widens it by as much.
     """
-    link = scenario.reference_link
-    t = 10 ** (scenario.js_threshold_db / 10)
 
     def disc(eirp_w: float, position_error_m: float = 0.0) -> Disc:
-        radius = link.range_m * math.sqrt(eirp_w / (t * link.eirp_w))
+        radius = nominal_radius(scenario, eirp_w)
         return Disc(0.0, 0.0, radius + position_error_m, "inside")
 
     zones: list[Zone] = []

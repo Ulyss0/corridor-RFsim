@@ -140,7 +140,7 @@ Two kinds of data, kept apart:
   `beamwidth_deg` up to 180, `sidelobe_db` up to 0). Its `eirp_w` is then the main beam EIRP.
   Without `antenna` it is omnidirectional. Enemy jammers are omnidirectional for now.
 - Friendly jammers are on except during cuts. `cuts` in the file are cuts already scheduled at
-  start: they begin as `scheduled` and still need the operator's confirmation. Other cuts are
+  start: they begin as `scheduled` and still need the command's confirmation. Other cuts are
   created live with `cut.schedule`.
 - Band filter: a jammer (friendly or enemy) only blocks a mission if its `bands` contain the
   mission `band`. A radar blocks every band.
@@ -415,6 +415,11 @@ classDiagram
     MissionRuntime *-- "0..1" DroneState : drone
     PlanUpdated *-- "1" PlanMetrics : metrics
     PlanUpdated *-- "*" RoutePoint : baseline_route, optimised_route
+    PlanUpdated *-- "*" RouteChoice : choices
+    RouteChoice *-- "*" ProposedCut : cuts
+    ProposedCut ..> FriendlyJammer : jammer (id)
+    MissionRuntime *-- "0..1" RouteRequest : request
+    RouteRequest ..> Cut : cuts (ids)
     Flight *-- "*" RoutePoint : route
 ```
 
@@ -440,7 +445,7 @@ Commands and events belong to the domain. Each adapter translates its own wire f
 - **Shared vocabulary, not 1 to 1.** The front receives everything; TAK will listen to a subset
   in another shape. Demo controls (`clock.set`) only exist on the front.
 - **Every command carries an `actor`**, the sender's callsign. The engine, not the adapter,
-  checks it: only the jammer operator may confirm a cut, whatever the channel. The web front
+  checks it: only the command may confirm a cut, whatever the channel. The web front
   signs in with a callsign (`?callsign=`), which sets its role and what it receives, and may
   only act as that callsign; there is no authentication in the proof of concept.
 - **Accepted shortcut on the WebSocket side.** Domain events are pydantic models; the WebSocket
@@ -452,11 +457,13 @@ Rules enforced today:
 | Command | Rejected when |
 |---|---|
 | `cut.schedule` | unknown friendly jammer or mission, start in the past, overlap with another cut of the same jammer |
-| `cut.confirm` | unknown cut, already confirmed, actor is not the jammer operator |
+| `cut.confirm` | unknown cut, already confirmed, actor is not the command |
+| `route.choose` | unknown mission, not `planned`, no plan yet, actor is not its pilot (the command answers cuts, it does not pick routes), no such choice in the plan, deadline already past, a cut it needs overlaps another cut |
+| `route.decide` | unknown mission, actor is not the command, no pending request |
 | `cut.cancel` | unknown cut |
 | `mission.request` | actor is not a pilot |
-| `mission.update` | unknown mission, mission not in `planned`, actor is neither its pilot nor the command |
-| `mission.launch` | unknown mission, mission not in `planned`, actor is neither its pilot nor the command |
+| `mission.update` | unknown mission, mission not in `planned`, actor is not its pilot |
+| `mission.launch` | unknown mission, mission not in `planned`, actor is not its pilot (the command only answers cut requests) |
 | `inject.delay` | unknown mission, no drone in flight |
 | `threat.add` | actor is not the command; fields not matching the kind (pydantic); a zone the J/S model cannot draw (jammer on a pilot) |
 | `threat.remove` | actor is not the command, unknown threat |
@@ -760,23 +767,50 @@ Server to client:
   elevation file), `alt_m` and `amsl_m` (`null` in 2D). For the altitude profile and a 3D
   view of the route (a line through the `profile` points at `amsl_m`).
 - `status`: `preview` (uses a cut not confirmed yet, not flyable), `approved` (confirmed cuts
-  only), `fallback` (drone late, safe route from its position), `baseline` (no usable cut).
+  only), `fallback` (drone late, safe route from its position), `baseline` (no usable cut),
+  `straight` (cut refused, plan B: the direct route through the jammer still on).
 - Battery figures are consumption in % of `battery_max_s`. `saved_pct` is relative to the
   baseline consumption: (85 - 52) / 85 = 38.8 %, not the 33 point difference. `saved_s` counts
   flight time, hover included, ground wait excluded.
+- `choices`: the routes the pilot may pick, at most three, in this order:
+  `fastest` (cuts every friendly jammer it needs), `one_cut` (the fastest cutting a single
+  jammer), `safe` (the flyable route as is, no new cut). Each gives `cuts` (jammer, start, end;
+  the window already includes the entry and exit margins, so scheduling it as is gives
+  `route`), `route`, `flight_s`, `battery_used_pct`, and `saved_s` / `saved_pct` against
+  `safe`. A choice needing cuts appears only if it saves 30 s against the one after it, so
+  `fastest` is dropped when it does no better than `one_cut`. Jammers with a cut not over by
+  departure are left alone. Computed by `corridor.domain.planner.plan.route_choices`: the
+  windows span the time the drone would spend in each zone if those jammers were off for the
+  whole flight, then the route is searched again with those windows only.
+
+**Route request.** The pilot picks a choice with `route.choose`. `safe` stands at once
+(`status: accepted`). A choice needing cuts schedules them (`requested_for` the mission) and
+asks the command with a `route.decide` notification; the request is `pending` until a deadline
+2 minutes before the take-off of that route or its first cut, whichever comes first. The
+command answers with `route.decide` (accept confirms the cuts and orders the jammer operators,
+refuse cancels them). Only the command ever cuts: unanswered at the deadline, the request is
+refused (`decided_by: "timeout"`), and launching while still `pending` refuses it
+(`decided_by: "launch"`). After a refusal the pilot's plan B, `on_timeout`, decides the flight:
+`avoid` flies the `safe` route (the detour), `cross` flies the route picked anyway, straight
+through the jammers still on (`RouteRequest.route`, `jammers`): the control link may be lost
+there, and the safety rule leaves those jammers alone (`Flight.through_jammers`). At launch the plan
+becomes that route, with status `straight`, so every view shows what is flown. Without a
+detour (the pilot stands in a jammer zone) the front always sends `avoid`: no answer, no flight. Picking again withdraws a pending request
+and its cuts. Every change goes out as `route.request` and is kept for the snapshot.
 
 **Server to client**
 
 | Type | Status | Content |
 |---|---|---|
-| `snapshot` | done | on connect, filtered for the viewer: viewer (callsign, role), scenario, nominal zones, clock, cuts, and per mission its constraints (grid, zones, concerned jammers and threats), status, latest plan (or null), latest drone state (or null) |
+| `snapshot` | done | on connect, filtered for the viewer: viewer (callsign, role), scenario, nominal zones, clock, cuts, and per mission its constraints (grid, zones, concerned jammers and threats), status, latest plan (or null), latest drone state (or null), route request (or null) |
 | `clock` | done | sim time, factor, paused; on change only |
 | `cut.scheduled`, `cut.confirmed`, `cut.cancelled` | done | the cut (`requested_for`: the mission it was asked for, if any) |
 | `mission.created` | done | the full mission (drone fields from the pilot); a new `snapshot` follows, then a notification to the pilot and the first `plan.updated` |
 | `mission.updated` | done | the mission with its new points and departure; a new `snapshot` follows for every client (plan back to null until the next `plan.updated`) |
 | `threat.added`, `threat.removed` | done | the threat (or its id) and the missions it concerns; a new `snapshot` follows, then notifications to the command and the pilots, then the new `plan.updated` |
 | `mission.status` | done | mission id; `planned`, `flying`, `arrived` |
-| `notification` | done | `to` (callsign), text, optional action (the button to show and the cut it confirms) |
+| `notification` | done | `to` (callsign), text, optional action: `cut.confirm` with the cut, or `route.decide` with the mission whose request awaits an answer |
+| `route.request` | done | the route request of a mission: kind, cut ids, saving, deadline, `on_timeout`, status (`pending`, `accepted`, `refused`), `decided_by` |
 | `ack`, `error` | done | `req_id`, reason on error |
 | `plan.updated` | done | see above; after every change to the cuts of a jammer that concerns the mission, while it is `planned`; arrives after the command's `ack` |
 | `drone.state` | done | mission id, position, action, battery used, delay, route revision; every tick in flight |
@@ -788,10 +822,12 @@ Server to client:
 |---|---|---|
 | `cut.schedule` | done | jammer, start, end, optional mission it is asked for |
 | `cut.cancel` | done | cut id |
-| `cut.confirm` | done | cut id |
+| `cut.confirm` | done | cut id; command only |
 | `mission.request` | done | `launch`, `target`, `departure_s` (a past one means as soon as possible); the mission id is `M<n>`, the first one free |
-| `mission.update` | done | mission id, `launch`, `target`, `departure_s`; only while `planned` |
-| `mission.launch` | done | mission id |
+| `mission.update` | done | mission id, `launch`, `target`, `departure_s`, optional `cross_radars` (routes may fly through radar zones, never jammers; omitted keeps it); only while `planned`; drops the route request and its cuts |
+| `route.choose` | done | mission id, `kind` (`fastest`, `one_cut`, `safe`), `on_timeout`: plan B if refused or unanswered (`avoid`: detour, default; `cross`: straight through the jammers anyway); its pilot only |
+| `route.decide` | done | mission id, `accept`; command only |
+| `mission.launch` | done | mission id; its pilot only |
 | `clock.set` | done | factor and/or paused |
 | `inject.delay` | done | mission id, `delay_s`: hold the flying drone where it is (demo twist) |
 | `threat.add` | done | `kind` (`radar`, `jammer`, `avoid`), `pos`; `radius_m` for a radar or a zone to avoid, `eirp_w` and `bands` for a jammer; optional `position_error_m` (not for a zone to avoid) |

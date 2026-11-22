@@ -35,6 +35,7 @@ export function mockPlan(m: Mission, cuts: Cut[]): PlanUpdated {
     baseline_route: baseline,
     optimised_route: optimised,
     profile: [],
+    choices: [],
   }
 }
 

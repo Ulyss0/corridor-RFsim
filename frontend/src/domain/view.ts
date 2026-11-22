@@ -1,6 +1,6 @@
 // Pure helpers to render any instant from the snapshot, the cuts and the last plan
 // (see "Rendering on the front" in docs/architecture.md). No React, no map.
-import type { Cut, Grid, Mission, Position, RoutePoint, Scenario, Zone } from '../api/protocol'
+import type { ChoiceKind, Cut, Grid, Mission, MissionView, Position, RouteChoice, RoutePoint, Scenario, Zone } from '../api/protocol'
 
 export type ZoneState = 'on' | 'cut' | 'pending'
 
@@ -117,6 +117,12 @@ export function inForbidden(zone: Zone, pos: Position): boolean {
   return zone.forbidden === 'inside' ? inside : !inside
 }
 
+/** Jammer zones at full size (the reference footprints) that the launch point lies in: the
+ * pilot starts the mission inside the jamming. Radars are left out: they jam nothing. */
+export function startsInside(nominal: Zone[], launch: Position): Zone[] {
+  return nominal.filter((z) => z.kind !== 'radar' && z.forbidden === 'inside' && inRing(z.ring, launch))
+}
+
 /** Ray casting on lon/lat: fine at the scale of the demo area. */
 function inRing(ring: Position[], p: Position): boolean {
   let inside = false
@@ -204,4 +210,84 @@ export function nextClockTime(startTime: string, nowS: number, hhmm: string): nu
   const startOfDayS = (Math.floor((startMs / 1000 + nowS) / day) * day * 1000 - startMs) / 1000
   const t = startOfDayS + h * 3600 + m * 60
   return t >= nowS ? t : t + day
+}
+
+/** The pilot may still pick a route: the mission waits on the ground with no route picked, or
+ * the last pick was refused. */
+export function choosing(view: MissionView): boolean {
+  return view.status === 'planned' && (!view.request || view.request.status === 'refused')
+}
+
+/** Flight duration as `m min ss s`. */
+export function durationLabel(s: number): string {
+  const total = Math.round(s)
+  return `${Math.floor(total / 60)} min ${String(total % 60).padStart(2, '0')} s`
+}
+
+/** Name of a route choice, in the words the app uses elsewhere: the detour goes around every
+ * jammer, a direct route goes through jammers during their cuts. */
+export function choiceTitle(c: Pick<RouteChoice, 'kind' | 'cuts'>): string {
+  if (c.kind === 'safe') return 'Detour'
+  const n = c.cuts.length
+  return n > 0 ? `Direct route · ${n} cut${n > 1 ? 's' : ''}` : 'Direct route'
+}
+
+/** Same, from the kind alone (a request keeps the kind, not the cuts). */
+export function kindTitle(kind: ChoiceKind): string {
+  return { safe: 'Detour', one_cut: 'Direct route · 1 cut', fastest: 'Direct route · all cuts' }[kind]
+}
+
+/** Choice drawn on top: the one under the pointer, else the one clicked, else the first one
+ * worth asking for and not refused (a direct route saving a few seconds is only there for
+ * comparison; after a refusal the detour comes back on top). */
+export function highlightedChoice(
+  choices: RouteChoice[],
+  focused: ChoiceKind | null,
+  selected: ChoiceKind | null,
+  refused: ChoiceKind | null = null,
+): RouteChoice | null {
+  const find = (k: ChoiceKind | null) => (k ? choices.find((c) => c.kind === k) : undefined)
+  return (
+    find(focused) ??
+    find(selected) ??
+    choices.find((c) => c.worth_asking && c.kind !== refused) ??
+    choices[0] ??
+    null
+  )
+}
+
+/** Kind of route the command refused for this mission, if its last request was refused and
+ * the pilot's plan B is the detour: that route is greyed out. */
+export function refusedKind(view: MissionView): ChoiceKind | null {
+  const r = view.request
+  return r?.status === 'refused' && r.cuts.length > 0 && r.on_timeout === 'avoid' ? r.kind : null
+}
+
+/** Kind of route refused but flown anyway (plan B "straight anyway"): it stays on top. */
+export function straightAnyway(view: MissionView): ChoiceKind | null {
+  const r = view.request
+  return r?.status === 'refused' && r.cuts.length > 0 && r.on_timeout === 'cross' ? r.kind : null
+}
+
+/** Point at ``fraction`` of the route length (flat-earth distances, fine at route scale). */
+export function pointAlong(route: RoutePoint[], fraction: number): Position {
+  const legs = route.slice(1).map((p, i) => Math.hypot(p.lat - route[i].lat, (p.lon - route[i].lon) * Math.cos((p.lat * Math.PI) / 180)))
+  let left = legs.reduce((a, b) => a + b, 0) * fraction
+  for (let i = 0; i < legs.length; i++) {
+    if (left <= legs[i] && legs[i] > 0) {
+      const f = left / legs[i]
+      return { lat: route[i].lat + (route[i + 1].lat - route[i].lat) * f, lon: route[i].lon + (route[i + 1].lon - route[i].lon) * f }
+    }
+    left -= legs[i]
+  }
+  const last = route[route.length - 1]
+  return { lat: last.lat, lon: last.lon }
+}
+
+/** Route the drone is set to fly: the plan's, or with plan B "straight anyway" after a
+ * refusal, the direct route picked, through the jammers still on. */
+export function flownRoute(view: MissionView): RoutePoint[] {
+  const r = view.request
+  if (r && straightAnyway(view) && r.route.length > 0) return r.route
+  return view.plan?.optimised_route ?? []
 }

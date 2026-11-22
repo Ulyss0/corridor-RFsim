@@ -1,7 +1,7 @@
 """Commands: requests to change the world, sent by any adapter.
 
 ``actor`` is the callsign of whoever sends the command. The engine checks it against the
-domain rules (only the jammer operator confirms a cut), whatever the channel.
+domain rules (only the command confirms a cut), whatever the channel.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
+from corridor.domain.events import ChoiceKind, OnTimeout
 from corridor.domain.geo import Position
 from corridor.domain.model import Model
 
@@ -36,6 +37,8 @@ class CancelCut(Model):
 
 
 class ConfirmCut(Model):
+    """Only the command confirms a cut; the jammer operator then carries it out."""
+
     type: Literal["cut.confirm"] = "cut.confirm"
     actor: str
     cut: str
@@ -54,9 +57,10 @@ class RequestMission(Model):
 
 
 class UpdateMission(Model):
-    """Move the launch or target of a mission still on the ground, or change its departure.
+    """Move the launch or target of a mission still on the ground, change its departure, or
+    whether its routes may cross radars.
 
-    Same rights as launch: its pilot or the command post.
+    Same rights as launch: its pilot only.
     """
 
     type: Literal["mission.update"] = "mission.update"
@@ -67,10 +71,36 @@ class UpdateMission(Model):
     departure_s: float = Field(
         ge=0, description="Earliest departure; one in the past means as soon as possible."
     )
+    cross_radars: bool | None = Field(
+        default=None, description="Let routes cross radar zones; None keeps the mission's choice."
+    )
+
+
+class ChooseRoute(Model):
+    """The pilot picks one of the route choices of its current plan.
+
+    A choice needing cuts asks the command, which answers until a deadline; ``on_timeout``
+    says what happens if it has not by then.
+    """
+
+    type: Literal["route.choose"] = "route.choose"
+    actor: str
+    mission: str
+    kind: ChoiceKind
+    on_timeout: OnTimeout = "avoid"
+
+
+class DecideRoute(Model):
+    """The command accepts or refuses the pending route request of a mission."""
+
+    type: Literal["route.decide"] = "route.decide"
+    actor: str
+    mission: str
+    accept: bool
 
 
 class LaunchMission(Model):
-    """Only the mission pilot or the command post may launch."""
+    """Only the mission pilot may launch: the command only answers cut requests."""
 
     type: Literal["mission.launch"] = "mission.launch"
     actor: str
@@ -139,6 +169,8 @@ Command = Annotated[
     | ConfirmCut
     | RequestMission
     | UpdateMission
+    | ChooseRoute
+    | DecideRoute
     | LaunchMission
     | SetClock
     | InjectDelay
