@@ -4,8 +4,8 @@
 import { ActionIcon, Alert, Button, Group, SegmentedControl, Stack, Text, TextInput, Tooltip } from '@mantine/core'
 import { useState } from 'react'
 import { send } from '../../api/client'
-import type { Mission, Position } from '../../api/protocol'
-import { clockLabel, distanceM, formatPosition, missionOf, nextClockTime, parsePosition } from '../../domain/view'
+import type { LostLinkAction, Mission, Position } from '../../api/protocol'
+import { clockLabel, distanceM, formatPosition, LOST_LINK_LABELS, missionOf, nextClockTime, parsePosition } from '../../domain/view'
 import { useLiveSimTime } from '../../hooks/useSimNow'
 import { useStore } from '../../store'
 import { CrosshairIcon } from '../Icons'
@@ -39,6 +39,7 @@ function Form({ edited }: { readonly edited: Mission | null }) {
   const now = useLiveSimTime(1)
   const [when, setWhen] = useState<When>(edited ? 'keep' : 'asap')
   const [at, setAt] = useState('')
+  const [lostLink, setLostLink] = useState<LostLinkAction>(edited?.lost_link ?? 'rth')
   if (!snapshot) return null
 
   const startTime = snapshot.scenario.start_time
@@ -53,8 +54,17 @@ function Form({ edited }: { readonly edited: Mission | null }) {
 
   const submit = () => {
     if (!launch || !target || departureS === null) return
-    if (edited) send({ type: 'mission.update', mission: edited.id, launch, target, departure_s: departureS })
-    else send({ type: 'mission.request', launch, target, departure_s: departureS })
+    if (edited)
+      send({
+        type: 'mission.update',
+        mission: edited.id,
+        launch,
+        target,
+        departure_s: departureS,
+        cross_radars: edited.cross_radars,
+        lost_link: lostLink,
+      })
+    else send({ type: 'mission.request', launch, target, departure_s: departureS, lost_link: lostLink })
   }
 
   return (
@@ -98,6 +108,24 @@ function Form({ edited }: { readonly edited: Mission | null }) {
         <Text size="xs" c="dimmed" mt={4}>
           {departureS === null ? 'Pick a time.' : `Earliest take-off ${clockLabel(startTime, departureS)}`}
           {when === 'at' && departureS !== null && departureS - now > 43_200 && ' (tomorrow)'}
+        </Text>
+      </div>
+
+      <div>
+        <Text size="sm" fw={500} mb={4}>Lost link failsafe</Text>
+        <SegmentedControl
+          fullWidth
+          size="xs"
+          data={[
+            { value: 'rth', label: 'RTH' },
+            { value: 'continue', label: 'Continue' },
+            { value: 'land', label: 'Land' },
+          ]}
+          value={lostLink}
+          onChange={(v) => setLostLink(v as LostLinkAction)}
+        />
+        <Text size="xs" c="dimmed" mt={4}>
+          {LOST_LINK_LABELS[lostLink].detail}
         </Text>
       </div>
 

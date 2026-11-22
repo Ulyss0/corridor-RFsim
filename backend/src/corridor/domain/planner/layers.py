@@ -9,10 +9,12 @@ route points carry no height.
   computed at cell centres, and a cell is forbidden as soon as any part of it may be in a zone,
   as in 2D. A friendly jammer's zone is off during its cut windows (shrunk by the margins);
 - an enemy jammer's zone, widened further for its position error by the 2D margin
-  e * k / |k - 1| (``corridor.domain.zones``), in whole cells;
+  e * k / |k - 1| (``corridor.domain.zones``), in whole cells. With relays, k differs per
+  connection point: the zone against each one is widened by its own margin, then intersected
+  (widening the intersection by one margin could miss part of it);
 - a radar: its 2D disc at every level (masking radars by the terrain is still to do);
-- the pilot's minimum signal: where the control link is below ``Mission.link_min_dbm``
-  (``link_cells``), widened by one cell like the jammer zones.
+- the minimum signal: where the best control link, from the pilot or a relay, is below
+  ``Mission.link_min_dbm`` (``link_cells``), widened by one cell like the jammer zones.
 
 Zones to avoid are left out, as in 2D. Climbing or descending between two levels takes their
 height difference at ``CLIMB_MPS``.
@@ -20,6 +22,7 @@ height difference at ``CLIMB_MPS``.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import math
 from dataclasses import dataclass
@@ -38,7 +41,7 @@ from corridor.domain.planner.masks import (
 from corridor.domain.scenario import EnemyJammer, Mission, Scenario
 from corridor.domain.state import Cut
 from corridor.domain.zones import ZoneKind, forbidden_shapes
-from corridor.domain.zones3d import forbidden, jamming_zones, link_lost
+from corridor.domain.zones3d import forbidden, jammer_powers, link_lost, source_signals
 
 CLIMB_MPS = 3.0
 """Climb and descent speed between levels (open decision: climb speed and its battery cost)."""
@@ -101,14 +104,21 @@ def cells_by_threat(
     margins included), with its kind."""
     friendly_ids = {j.id for j in scenario.friendly_jammers}
     enemies = {t.id: t for t in scenario.enemy_threats if isinstance(t, EnemyJammer)}
+    sources = source_signals(scenario, mission, grid)
+    best = functools.reduce(np.maximum, [signal for _, signal in sources])
     out: dict[str, tuple[ZoneKind, Cells]] = {}
-    for jammer, js_db in jamming_zones(scenario, mission, grid).items():
-        cells = grow(forbidden(scenario, js_db), 1)
+    for jammer, power in jammer_powers(scenario, mission, grid).items():
         if jammer in friendly_ids:
-            out[jammer] = ("friendly_jammer", cells)
-        else:
-            margin = error_cells(scenario, mission, enemies[jammer], grid.cell_m)
-            out[jammer] = ("enemy_jammer", grow(cells, margin))
+            out[jammer] = ("friendly_jammer", grow(forbidden(scenario, power - best), 1))
+            continue
+        per_source = (
+            grow(
+                forbidden(scenario, power - signal),
+                1 + error_cells(scenario, eirp_w, enemies[jammer], grid.cell_m),
+            )
+            for eirp_w, signal in sources
+        )
+        out[jammer] = ("enemy_jammer", functools.reduce(np.logical_and, per_source))
     frame = LocalFrame(mission.launch)
     levels = len(scenario.terrain.levels_m)
     for zone in forbidden_shapes(scenario, mission):
@@ -119,7 +129,7 @@ def cells_by_threat(
 
 
 def link_cells(scenario: Scenario, mission: Mission, grid: Grid) -> Cells:
-    """Cells where the pilot's signal is too weak at each level, widened by one cell."""
+    """Cells where the best control signal is too weak at each level, widened by one cell."""
     return grow(link_lost(scenario, mission, grid), 1)
 
 
@@ -133,11 +143,12 @@ def grow(cells: Cells, n: int) -> Cells:
     return grown
 
 
-def error_cells(scenario: Scenario, mission: Mission, jammer: EnemyJammer, cell_m: float) -> int:
-    """Cells to add for the jammer's position error: the 2D margin e * k / |k - 1|."""
+def error_cells(scenario: Scenario, link_eirp_w: float, jammer: EnemyJammer, cell_m: float) -> int:
+    """Cells to add for the jammer's position error against a connection point of link EIRP
+    ``link_eirp_w``: the 2D margin e * k / |k - 1|."""
     if jammer.position_error_m == 0:
         return 0
-    k = math.sqrt(10 ** (scenario.js_threshold_db / 10) * mission.link_eirp_w / jammer.eirp_w)
+    k = math.sqrt(10 ** (scenario.js_threshold_db / 10) * link_eirp_w / jammer.eirp_w)
     if abs(k - 1) < 1e-9:
         return 10**6  # the zone could be anywhere: every cell
     return math.ceil(jammer.position_error_m * k / abs(k - 1) / cell_m)

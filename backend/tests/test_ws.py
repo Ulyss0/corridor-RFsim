@@ -191,6 +191,8 @@ def test_rf_coverage_endpoint(scenario: Scenario) -> None:
     assert first["geometry"]["type"] == "Polygon"
     assert "level_dbm" in first["properties"]
     assert "threat_id" in first["properties"]
+    radars = [f for f in data["features"] if f["properties"]["threat_kind"] == "radar"]
+    assert [f["properties"]["threat_id"] for f in radars] == ["R1"]
 
 
 def test_rf_heatmap_endpoint_returns_a_png_image_once_per_configuration(

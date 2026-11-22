@@ -500,10 +500,10 @@ def heatmap_png(heatmap: JsHeatmap) -> bytes:
     upper_bounds = np.array([b for b, _ in _HEATMAP_CLASSES[:-1]])
     palette = np.array([c for _, c in _HEATMAP_CLASSES], dtype=np.uint8)
     rgba = palette[np.searchsorted(upper_bounds, heatmap.js_db, side="right")]
-    return _encode_png_rgba(rgba)
+    return encode_png_rgba(rgba)
 
 
-def _encode_png_rgba(rgba: np.ndarray) -> bytes:
+def encode_png_rgba(rgba: np.ndarray) -> bytes:
     """Minimal PNG encoder for an 8-bit RGBA array of shape (rows, cols, 4)."""
     rows, cols, _ = rgba.shape
     no_filter = np.zeros((rows, 1), dtype=np.uint8)

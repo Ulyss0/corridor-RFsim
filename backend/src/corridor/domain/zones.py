@@ -19,6 +19,15 @@ sidelobe disc outside it. Both discs contain the jammer, so the zone is star-sha
 jammer. Only k > 1 is supported: with k < 1 the zone would be an unbounded wedge, which a ring
 cannot describe.
 
+Relays (``Scenario.relays`` on the mission band) are connection points beside the pilot: the
+drone keeps the link while J/S against any one of them stays below t, so J/S is the minimum
+over the connection points and a jammer's zone is the intersection of its zone against each
+one (``ThreatShape.relays``). A relay disc uses the relay EIRP in place of Ps. A relay the J/S
+model cannot draw against (on the jammer, k near 1, k < 1 against a directional jammer) is left
+out for that jammer: dropping a connection point only enlarges the zone. 2D has no minimum
+signal, so here relays only shrink jammer zones; their range gain is in 3D
+(``corridor.domain.zones3d``).
+
 The pilot stands at the launch point, so the zones are fixed for a mission, and differ from one
 mission to the next. Whether a friendly jammer zone is active at a given time depends on its
 cuts, not on this module.
@@ -43,7 +52,10 @@ where a drone flying ``reference_link.range_m`` from its pilot would lose a link
 
 from __future__ import annotations
 
+import dataclasses
+import functools
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -56,6 +68,7 @@ from corridor.domain.scenario import (
     AvoidZone,
     EnemyJammer,
     EnemyRadar,
+    FriendlyJammer,
     Mission,
     Scenario,
 )
@@ -164,8 +177,10 @@ def js_disc(
 class ThreatShape:
     """Zone of one threat in the mission frame (``LocalFrame(mission.launch)``).
 
-    Without ``beam``, ``disc`` is the zone. With ``beam``, the zone is ``disc`` inside the beam
-    and ``sidelobe`` outside it; both are then forbidden inside and contain the jammer.
+    Without ``beam``, ``disc`` is the zone against the pilot. With ``beam``, it is ``disc``
+    inside the beam and ``sidelobe`` outside it; both are then forbidden inside and contain the
+    jammer. ``relays`` holds the same jammer's zone against each relay (``origin`` set, no
+    relays of their own); the zone is the intersection of all of them.
     """
 
     threat: str
@@ -173,9 +188,21 @@ class ThreatShape:
     disc: Disc
     beam: Beam | None = None
     sidelobe: Disc | None = None
+    relays: tuple[ThreatShape, ...] = ()
+    origin: tuple[float, float] | None = None
+    """Jammer position, which every zone against a connection point contains (J/S is infinite
+    there). Set with ``relays``, to draw their intersection."""
 
     def contains(self, x: float, y: float) -> bool:
         """True if (x, y) lies on the forbidden side of the zone (exact, no cell margin)."""
+        return self._own_contains(x, y) and all(r.contains(x, y) for r in self.relays)
+
+    def parts(self) -> tuple[ThreatShape, ...]:
+        """The zone against each connection point, the pilot first, without their relays."""
+        own = dataclasses.replace(self, relays=()) if self.relays else self
+        return (own, *self.relays)
+
+    def _own_contains(self, x: float, y: float) -> bool:
         d = self.disc
         if self.beam is not None and not self.beam.contains(x, y):
             if self.sidelobe is None:
@@ -204,44 +231,84 @@ def mission_shapes(scenario: Scenario, mission: Mission) -> list[ThreatShape]:
 
     A pilot standing inside the full zone of an omnidirectional friendly jammer (its reference
     footprint, ``nominal_zones``) starts the mission in the jamming: that full zone is then the
-    mission's zone for this jammer, and the drone leaves it only during a cut.
+    mission's zone against the pilot for this jammer. Without a relay, the drone leaves it only
+    during a cut; a relay may still hold the link in part of it.
     """
     frame = LocalFrame(mission.launch)
+    pilot = Source((0.0, 0.0), mission.link_eirp_w)
+    relays = [Source(frame.to_xy(r.pos), r.eirp_w) for r in scenario.relays_on(mission.band)]
 
-    def disc(pos: Position, eirp_w: float, position_error_m: float = 0.0) -> Disc:
+    def disc(source: Source, pos: Position, eirp_w: float, position_error_m: float = 0.0) -> Disc:
         return js_disc(
-            (0.0, 0.0),
+            source.xy,
             frame.to_xy(pos),
-            mission.link_eirp_w,
+            source.link_eirp_w,
             eirp_w,
             scenario.js_threshold_db,
             position_error_m,
         )
 
-    zones: list[ThreatShape] = []
-    for j in scenario.friendly_jammers:
-        if mission.band not in j.bands:
-            continue
-        main = disc(j.pos, j.eirp_w)
+    def friendly(j: FriendlyJammer, source: Source) -> ThreatShape:
+        main = disc(source, j.pos, j.eirp_w)
         if j.antenna is None:
             x, y = frame.to_xy(j.pos)
             full = nominal_radius(scenario, j.eirp_w)
-            if math.hypot(x, y) < full:
+            if source is pilot and math.hypot(x, y) < full:
                 main = Disc(x, y, full, "inside")
-            zones.append(ThreatShape(j.id, "friendly_jammer", main))
-        else:
-            sidelobe = disc(j.pos, j.eirp_w * 10 ** (j.antenna.sidelobe_db / 10))
-            zones.append(_directional(j.id, frame.to_xy(j.pos), j.antenna, main, sidelobe))
+            return ThreatShape(j.id, "friendly_jammer", main)
+        sidelobe = disc(source, j.pos, j.eirp_w * 10 ** (j.antenna.sidelobe_db / 10))
+        return _directional(j.id, frame.to_xy(j.pos), j.antenna, main, sidelobe)
+
+    def enemy(t: EnemyJammer, source: Source) -> ThreatShape:
+        main = disc(source, t.pos, t.eirp_w, t.position_error_m)
+        return ThreatShape(t.id, "enemy_jammer", main)
+
+    zones: list[ThreatShape] = []
+    for j in scenario.friendly_jammers:
+        if mission.band in j.bands:
+            against = functools.partial(friendly, j)
+            zones.append(_with_relays(frame.to_xy(j.pos), pilot, relays, against))
     for threat in scenario.enemy_threats:
         match threat:
             case EnemyJammer() if mission.band in threat.bands:
-                main = disc(threat.pos, threat.eirp_w, threat.position_error_m)
-                zones.append(ThreatShape(threat.id, "enemy_jammer", main))
+                against = functools.partial(enemy, threat)
+                zones.append(_with_relays(frame.to_xy(threat.pos), pilot, relays, against))
             case EnemyRadar():
                 zones.append(_radar(threat, frame))
             case AvoidZone():
                 zones.append(_avoid(threat, frame))
     return zones
+
+
+@dataclass(frozen=True)
+class Source:
+    """Connection point of the control link, in the mission frame: the pilot or a relay."""
+
+    xy: tuple[float, float]
+    link_eirp_w: float
+
+
+def _with_relays(
+    jammer: tuple[float, float],
+    pilot: Source,
+    relays: list[Source],
+    against: Callable[[Source], ThreatShape],
+) -> ThreatShape:
+    """The jammer's zone against the pilot, intersected with its zone against each relay.
+
+    A relay the model cannot draw against is left out (``ValueError``): the zone only grows.
+    The pilot raises as without relays.
+    """
+    shape = against(pilot)
+    parts: list[ThreatShape] = []
+    for relay in relays:
+        try:
+            parts.append(against(relay))
+        except ValueError:
+            continue
+    if not parts:
+        return shape
+    return dataclasses.replace(shape, relays=tuple(parts), origin=jammer)
 
 
 def forbidden_shapes(scenario: Scenario, mission: Mission) -> list[ThreatShape]:
@@ -376,8 +443,8 @@ def _grid_box(grid: Grid, frame: LocalFrame) -> Box:
 def _touches(shape: ThreatShape, box: Box) -> bool:
     """True if the forbidden side of ``shape`` may overlap ``box``.
 
-    A directional zone lies within the union of its two discs: may say yes too often, never
-    too rarely.
+    A directional zone lies within the union of its two discs, and a zone with relays within
+    its zone against the pilot: may say yes too often, never too rarely.
     """
     discs = [shape.disc] if shape.sidelobe is None else [shape.disc, shape.sidelobe]
     return any(_disc_touches(d, box) for d in discs)
@@ -410,6 +477,42 @@ def _directional(
 
 
 def _ring(zone: ThreatShape) -> list[tuple[float, float]]:
+    if zone.relays and zone.origin is not None and zone.disc.forbidden == "inside":
+        return _intersection_ring(zone, zone.origin)
+    return _own_ring(zone)
+
+
+def _intersection_ring(zone: ThreatShape, jammer: tuple[float, float]) -> list[tuple[float, float]]:
+    """Boundary of the intersection of the parts forbidden inside, all star-shaped around the
+    jammer: along each ray from it, the nearest exit. A relay bubble (forbidden outside) is left
+    out of the drawing, which is then a little larger than the zone the planner uses."""
+    parts = [p for p in zone.parts() if p.disc.forbidden == "inside"]
+    angles = [2 * math.pi * i / (2 * RING_VERTICES) for i in range(2 * RING_VERTICES)]
+    for part in parts:
+        if part.beam is not None:
+            # Both sides of each beam edge, where the boundary steps from one disc to the other.
+            angles += [e + d for e in part.beam.edges() for d in (-1e-6, 1e-6)]
+    angles = sorted(a % (2 * math.pi) for a in angles)
+    jx, jy = jammer
+    ring = []
+    for a in angles:
+        ux, uy = math.cos(a), math.sin(a)
+        r = min(_part_exit(part, jx, jy, ux, uy) for part in parts)
+        ring.append((jx + r * ux, jy + r * uy))
+    return ring
+
+
+def _part_exit(part: ThreatShape, x: float, y: float, ux: float, uy: float) -> float:
+    """Distance along the unit ray from the jammer (x, y) to the boundary of one part."""
+    disc = part.disc
+    if part.beam is not None and not part.beam.contains(x + ux, y + uy):
+        if part.sidelobe is None:
+            return 0.0
+        disc = part.sidelobe
+    return _exit_distance(x, y, ux, uy, disc)
+
+
+def _own_ring(zone: ThreatShape) -> list[tuple[float, float]]:
     d, beam = zone.disc, zone.beam
     if beam is None:
         return [

@@ -8,11 +8,17 @@ import pytest
 from corridor.domain.events import RoutePoint
 from corridor.domain.geo import Grid, LocalFrame, Position
 from corridor.domain.planner.astar import earliest_path
-from corridor.domain.planner.layers import CLIMB_MPS, forbidden_cells, link_cells, mission_layers
+from corridor.domain.planner.layers import (
+    CLIMB_MPS,
+    cells_by_threat,
+    forbidden_cells,
+    link_cells,
+    mission_layers,
+)
 from corridor.domain.planner.masks import Mask, TimedMasks, layered_timed_masks
 from corridor.domain.planner.plan import ENTRY_MARGIN_S, EXIT_MARGIN_S, plan_mission
 from corridor.domain.safety import Flight, LevelCells, schedule_violation
-from corridor.domain.scenario import Scenario
+from corridor.domain.scenario import Relay, Scenario, Terrain
 from corridor.domain.state import Cut
 from corridor.domain.zones import mission_constraints
 from corridor.domain.zones3d import pilot_signal
@@ -214,3 +220,23 @@ def test_safety_rule_looks_at_the_drone_level() -> None:
     frame = LocalFrame(grid.origin)
     assert schedule_violation(flight(30.0), 0.0, frame, [], [], cells) is None
     assert schedule_violation(flight(60.0), 0.0, frame, [], [], cells) == "J1"
+
+
+def test_an_uncertain_enemy_jammer_still_shrinks_with_a_relay(scenario: Scenario) -> None:
+    """Each connection point gets its own position margin before the zones are intersected:
+    the relayed zone stays within the zone against the pilot alone, and is smaller."""
+    data = scenario.model_dump(mode="json")
+    for threat in data["enemy_threats"]:
+        if threat["id"] == "E1":
+            threat["position_error_m"] = 300
+    uncertain = Scenario.model_validate(data).model_copy(update={"terrain": Terrain(mode="3d")})
+    m1 = uncertain.missions[0]
+    grid = mission_constraints(uncertain, m1, 100).grid
+    e1 = next(t for t in uncertain.enemy_threats if t.id == "E1")
+    ex, ey = LocalFrame(e1.pos).to_xy(e1.pos)
+    near = LocalFrame(e1.pos).to_position(ex + 1500, ey)
+    relay = Relay(id="RL1", pos=near, eirp_w=m1.link_eirp_w, bands=[m1.band])
+    alone = cells_by_threat(uncertain, m1, grid)["E1"][1]
+    relayed = cells_by_threat(uncertain.model_copy(update={"relays": [relay]}), m1, grid)["E1"][1]
+    assert relayed.sum() < alone.sum()
+    assert not (relayed & ~alone).any()

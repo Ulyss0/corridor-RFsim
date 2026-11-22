@@ -27,7 +27,7 @@ from corridor.domain.planner.astar import Step, earliest_path
 from corridor.domain.planner.layers import Cells, Layers, forbidden_cells, mission_layers
 from corridor.domain.planner.masks import TimedMasks, shape_mask
 from corridor.domain.planner.smooth import smooth_route
-from corridor.domain.scenario import Mission, Scenario
+from corridor.domain.scenario import LostLinkAction, Mission, Scenario
 from corridor.domain.state import Cut, merge_cuts
 from corridor.domain.zones import ThreatShape, forbidden_shapes, mission_shapes
 
@@ -59,6 +59,7 @@ class MissionPlan:
     escape_until_s: float | None = None
     """Fallback only: end of the straight leg out of a zone the drone was caught in. The
     safety rules ignore the route before it: the drone is getting out."""
+    lost_link: LostLinkAction = "rth"
 
 
 def plan_mission(
@@ -105,6 +106,7 @@ def plan_mission(
         baseline_route=baseline,
         optimised_route=optimised,
         choices=route_choices(scenario, mission, grid, cuts, flyable),
+        lost_link=mission.lost_link,
     )
 
 
@@ -136,6 +138,7 @@ def _plan_through_cuts(
         baseline_route=route,
         optimised_route=route,
         choices=choices,
+        lost_link=mission.lost_link,
     )
 
 
@@ -309,6 +312,7 @@ def _choice(
         saved_pct=100 * (safe_s - route_s) / safe_s,
         radars=radars,
         worth_asking=worth,
+        lost_link=mission.lost_link,
     )
 
 
@@ -444,6 +448,7 @@ def plan_fallback(
         baseline_route=route,
         optimised_route=route,
         escape_until_s=depart_s if prefix else None,
+        lost_link=mission.lost_link,
     )
 
 
@@ -505,8 +510,9 @@ def _latest_useful_takeoff(
 ) -> float:
     """Past this, even a straight flight reaches every cut zone after its window closed.
 
-    For a directional jammer the zone lies within its main disc, so the distance to that disc
-    is a lower bound: the sweep may go a little too far, never stop too early.
+    For a directional jammer the zone lies within its main disc, and with relays within its
+    zone against the pilot, so the distance to that disc is a lower bound: the sweep may go a
+    little too far, never stop too early.
     """
     latest = mission.departure_s
     half_diagonal = cell_m * math.sqrt(2) / 2

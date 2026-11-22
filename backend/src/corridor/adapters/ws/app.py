@@ -17,6 +17,7 @@ import asyncio
 import base64
 import contextlib
 import logging
+import math
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -34,10 +35,13 @@ from corridor.domain.events import (
     Event,
     MissionCreated,
     MissionUpdated,
+    RelaySwitched,
     ThreatAdded,
     ThreatRemoved,
 )
-from corridor.domain.geo import Position
+from corridor.domain.geo import LocalFrame, Position
+from corridor.domain.heatmap import heatmap_png as mission_heatmap_png
+from corridor.domain.heatmap import mission_heatmap
 from corridor.domain.rf.coverage import (
     ContourLevel,
     compute_js_heatmap,
@@ -47,7 +51,7 @@ from corridor.domain.rf.coverage import (
     probe_point_rf,
 )
 from corridor.domain.rf.dem import DemProvider
-from corridor.domain.scenario import Scenario
+from corridor.domain.scenario import EnemyRadar, Scenario
 from corridor.domain.terrain import dem_path, ground_model
 from corridor.domain.zones import nominal_zones
 from corridor.engine.clock import SimClock
@@ -176,8 +180,35 @@ def _build_threat_coverage_features(
                 props["threat_kind"] = "enemy_jammer"
                 f["properties"] = props
                 features.append(f)
+        elif isinstance(threat, EnemyRadar):
+            features.append(_radar_coverage_feature(threat))
 
     return features
+
+
+def _radar_coverage_feature(radar: EnemyRadar) -> dict[str, Any]:
+    """The radar's disc, its range widened by its position error, as the heatmap and the
+    planner see it. Masking it by the terrain comes with the planner (open decision)."""
+    reach_m = radar.radius_m + radar.position_error_m
+    frame = LocalFrame(radar.pos)
+    ring = [
+        frame.to_position(reach_m * math.cos(a), reach_m * math.sin(a))
+        for a in (2 * math.pi * k / 64 for k in range(64))
+    ]
+    coords = [[p.lon, p.lat] for p in [*ring, ring[0]]]
+    return {
+        "type": "Feature",
+        "properties": {
+            "name": "Radar coverage",
+            "fill": "#fd7e14",
+            "fill_opacity": 0.2,
+            "stroke": "#e8590c",
+            "stroke_width": 2,
+            "threat_id": radar.id,
+            "threat_kind": "radar",
+        },
+        "geometry": {"type": "Polygon", "coordinates": [coords]},
+    }
 
 
 def create_app(
@@ -201,7 +232,7 @@ def create_app(
         def snapshot_for(viewer: Viewer) -> Snapshot:
             return snapshot(engine, audience, viewer)
 
-        if isinstance(event, MissionCreated | ThreatAdded | ThreatRemoved):
+        if isinstance(event, MissionCreated | ThreatAdded | ThreatRemoved | RelaySwitched):
             hub.resync(snapshot_for, lambda viewer: audience.sees(viewer, event))
         elif isinstance(event, MissionUpdated):
             hub.resync(snapshot_for, lambda _: True)
@@ -328,6 +359,62 @@ def create_app(
         if len(heatmap_cache) >= 16:
             heatmap_cache.clear()
         heatmap_cache[key] = result
+        return result
+
+    mission_heatmap_cache: dict[str, dict[str, Any]] = {}
+
+    @app.get(
+        "/api/heatmap",
+        responses={404: {"description": "No mission."}, 422: {"description": "Unknown level."}},
+    )
+    async def get_mission_heatmap(
+        mission_id: str | None = None, level: int = 0, off: str = ""
+    ) -> dict[str, Any]:
+        """J/S of the mission at one flight level (index, lowest first; 0 in 2D), on its
+        planning grid, as a PNG data URL with the corners it drapes on. The denied cells are
+        the ones the planner forbids (``corridor.domain.heatmap``).
+
+        ``off``: comma-separated friendly jammers whose cut is running at the instant shown.
+        """
+        current = engine.scenario
+        runtime = runtime_for(mission_id)
+        m, grid = runtime.mission, runtime.constraints.grid
+        levels = len(current.terrain.levels_m) if current.terrain.mode == "3d" else 1
+        if not 0 <= level < levels:
+            raise HTTPException(422, f"level must be in [0, {levels})")
+        jammers_off = frozenset(j for j in off.split(",") if j)
+        key = repr(
+            (
+                current.terrain,
+                current.friendly_jammers,
+                current.enemy_threats,
+                current.relays,
+                current.js_threshold_db,
+                m,
+                grid,
+                sorted(jammers_off),
+                level,
+            )
+        )
+        cached = mission_heatmap_cache.get(key)
+        if cached is not None:
+            return cached
+
+        def render() -> dict[str, Any]:
+            heatmap = mission_heatmap(current, m, grid, jammers_off)
+            png = mission_heatmap_png(heatmap, level, current.js_threshold_db)
+            sw = grid.origin
+            ne = grid.to_position(grid.cols * grid.cell_m, grid.rows * grid.cell_m)
+            w, s, e, n = sw.lon, sw.lat, ne.lon, ne.lat
+            return {
+                "image": "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
+                "coordinates": [[w, n], [e, n], [e, s], [w, s]],
+            }
+
+        result = await asyncio.to_thread(render)
+        if len(mission_heatmap_cache) >= 64:
+            mission_heatmap_cache.clear()
+        mission_heatmap_cache[key] = result
         return result
 
     @app.get("/api/rf/probe")

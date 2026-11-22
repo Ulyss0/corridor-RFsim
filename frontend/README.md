@@ -1,6 +1,6 @@
-# Corridor frontend (first draft)
+# Corridor frontend
 
-Planning screen. Stack and rules: root `README.md`, section "Front end". Protocol:
+Planning screen. Stack and rules: section "Stack and rules" below. Protocol:
 `docs/architecture.md`, section "WebSocket protocol".
 
 ```bash
@@ -42,19 +42,23 @@ src/
   the selected mission on the map) or of an object; the arrow goes back to the lists. A form
   (mission or cut) shows over the panel and goes back to it on close. Notifications stay docked
   at the bottom, foldable, with a count of cuts waiting for this callsign.
-- Command (`CMD`): every mission (list to pick one), every route and drone, nominal footprints of
-  every threat (dashed), the selected mission's own zones on top. Pilot: its mission only, with
-  the zones that concern it. Jammer operator: its jammers' footprints and the missions they
-  concern.
-- Map: grids, zones (friendly red / cut green / pending orange, enemy purple, radar orange;
-  `forbidden: outside` drawn as the grid with the ring as a hole), launch and target of every
-  mission, threats.
+- Command (`CMD`): every mission (list to pick one), every route and drone. Pilot: its mission
+  only. Jammer operator: the missions its jammers concern.
+- Map, three layers with one question each:
+  - **Zones**: where the tactical objects are. Jammers and radars are points (a friendly jammer's
+    dot is red when on, orange with a cut pending, green during its cut); only the zones to avoid
+    are surfaces. Launch and target of every mission are always shown.
+  - **Terrain RF** (`GET /api/rf/coverage`): the simplified reach of each jammer (received power
+    contours, terrain included, at 20 m) and radar (its disc, range plus position error).
+  - **Heatmap** (`GET /api/heatmap`): J/S against the selected mission's link on its planning
+    grid, the cells the planner avoids in red, radar coverage in orange, in 3D the cells out of
+    the pilot's reach in grey. Fetched again when the
+    set of jammers in a cut at the instant shown changes. In 3D, a level selector picks the flight
+    level; the selected route is coloured by flight level.
+- 3D scenarios (`terrain.mode: "3d"`): the mission detail shows the altitude profile (ground and
+  drone above sea level, from `plan.profile`).
 - "Why this route" in the mission detail (`plan.reasons`: around, over, through during a cut,
   through with the threat on), and one tag per reason on each route choice.
-- 3D scenarios (`terrain.mode: "3d"`): a level selector in the map toolbar shows the selected
-  mission's zones at one flight level (`GET /api/zones3d`) in place of its 2D discs (zones to
-  avoid stay 2D), and in grey the cells out of the pilot's reach at that level (`LINK`); the selected route is coloured by flight level; the mission detail shows the
-  altitude profile (ground and drone above sea level, from `plan.profile`).
 - Commands: `clock.set` (start / pause / speed), `cut.schedule` (EW cut form: jammer, mission
   among those the jammer concerns, start, length; prefilled from the jammer or mission shown;
   closes when the cut is scheduled), `cut.confirm` (only enabled for the jammer's operator),
@@ -88,3 +92,41 @@ src/
 - Schedule / move cuts by dragging on the timeline (today: the EW cut form in the sidebar).
 - Demo controls: scenario picker, reset, keyboard shortcuts.
 - Bundle size: maplibre + vis-timeline + mantine in one 2 MB chunk; split if it matters.
+
+## Stack and rules
+
+Planning screen used for the demo; ATAK stays the field view.
+
+| Layer | Choice | Why |
+|---|---|---|
+| UI | React + Vite + TypeScript | Known by the team, typed contract with the backend |
+| Components | Mantine | Panels, buttons, notifications, dark theme without CSS work |
+| Map | MapLibre GL JS, used directly (no wrapper library) | GeoJSON layers updated in place, smooth animation, offline tiles |
+| Basemap | Online tiles + an offline PMTiles extract of the demo area | The map keeps working without venue Wi-Fi |
+| Timeline | vis-timeline | Draggable cut windows and a moving time cursor out of the box |
+| Client state | Zustand | One small store, fed by the WebSocket |
+
+Screen layout:
+
+- Map, about 70% of the screen: jamming zones (red = active, green = cut, purple = enemy),
+  radars (orange), baseline route (grey, dashed), planned route, animated drone, ATAK users'
+  positions.
+- Right panel: mission card (distance, time, battery vs detour), route options, approve button,
+  notification feed (pilot and EW operator).
+- Bottom: timeline, one row per jammer with its cut windows, plus one row for the drone showing
+  when it crosses each zone. Scrubbing the timeline updates the map.
+
+Rules:
+
+- All map code sits in one framework-free module, `frontend/src/map/mapView.ts` (`setZones`,
+  `setRoutes`, `setDrone`, `setPhones`, ...). React components only create the map and call it.
+- The front end holds no business state: commands go to the backend and state comes back over
+  the same WebSocket (protocol in [docs/architecture.md](../docs/architecture.md)). On (re)connect the backend sends the full state, so a page reload or a
+  dropped connection loses nothing.
+- No internet needed at runtime: fonts, scripts and basemap are bundled.
+- Message types are generated from `schema/ws.schema.json` (see "Contract" in
+  [docs/architecture.md](../docs/architecture.md)), never written by hand.
+- Demo build: `npm run build`, then the backend serves `frontend/dist/` as static files. One process,
+  one port, no Node on the demo laptop. The static mount is not in `adapters/ws/app.py` yet.
+- Demo controls: scenario picker, start / pause / speed, reset, a keyboard shortcut per demo
+  step.

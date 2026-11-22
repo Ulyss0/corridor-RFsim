@@ -9,18 +9,19 @@ from pydantic import ValidationError
 from starlette.testclient import WebSocketTestSession
 
 from corridor.adapters.ws.app import create_app
-from corridor.domain.commands import AddThreat, LaunchMission, RemoveThreat
+from corridor.domain.commands import AddThreat, LaunchMission, RemoveThreat, SwitchRelay
 from corridor.domain.events import (
     Event,
     Notification,
     PlanMetrics,
+    RelaySwitched,
     RoutePoint,
     ThreatAdded,
     ThreatRemoved,
 )
 from corridor.domain.geo import Grid, Position
 from corridor.domain.planner.plan import MissionPlan, plan_mission
-from corridor.domain.scenario import AvoidZone, Mission, Scenario
+from corridor.domain.scenario import AvoidZone, Mission, Relay, Scenario
 from corridor.domain.state import Cut
 from corridor.domain.zones import mission_constraints
 from corridor.engine.clock import SimClock
@@ -236,3 +237,45 @@ def test_clients_concerned_get_a_new_snapshot(two_missions: Scenario) -> None:
         # PILOT-1's mission is not concerned: the next thing it gets is the clock.
         command.send_json({"req_id": "r2", "command": {"type": "clock.set", "actor": "CMD"}})
         assert receive(pilot_1)["type"] == "clock"
+
+
+@pytest.fixture
+def relayed(two_missions: Scenario, replanner: FakeReplanner) -> Engine:
+    """The demo with a 2.4 GHz relay near J3 (M1 and M2 both fly 2.4 GHz)."""
+    relay = Relay(id="RL1", pos=Position(lat=48.145, lon=11.59), eirp_w=10, bands=["2.4GHz"])
+    scenario = two_missions.model_copy(update={"relays": [relay]})
+    engine = Engine(scenario, 100, SimClock(20, wall=lambda: 0.0), replanner)
+    engine.request_plans()
+    replanner.requests.clear()
+    return engine
+
+
+def test_switching_a_relay_off_replans_the_missions_on_its_band(
+    relayed: Engine, replanner: FakeReplanner
+) -> None:
+    before = next(z for z in relayed.missions["M1"].shapes if z.threat == "J3")
+    assert before.relays
+    events = relayed.submit(SwitchRelay(actor="CMD", relay="RL1", on=False))
+    switched = events[0]
+    assert isinstance(switched, RelaySwitched)
+    assert (switched.relay, switched.on, switched.missions) == ("RL1", False, ["M1", "M2"])
+    assert relayed.scenario.relays[0].on is False
+    after = next(z for z in relayed.missions["M1"].shapes if z.threat == "J3")
+    assert not after.relays
+    assert sorted(r.mission for r in replanner.requests) == ["M1", "M2"]
+    assert replanner.requests[0].scenario.relays[0].on is False
+    assert "switched off" in notified(events)["CMD"]
+
+    replanner.requests.clear()
+    relayed.submit(SwitchRelay(actor="CMD", relay="RL1", on=True))
+    assert next(z for z in relayed.missions["M1"].shapes if z.threat == "J3").relays
+    assert sorted(r.mission for r in replanner.requests) == ["M1", "M2"]
+
+
+def test_a_relay_switch_is_checked(relayed: Engine) -> None:
+    with pytest.raises(CommandRejected, match="only the command"):
+        relayed.submit(SwitchRelay(actor="PILOT-1", relay="RL1", on=False))
+    with pytest.raises(CommandRejected, match="unknown relay"):
+        relayed.submit(SwitchRelay(actor="CMD", relay="RL9", on=False))
+    with pytest.raises(CommandRejected, match="already on"):
+        relayed.submit(SwitchRelay(actor="CMD", relay="RL1", on=True))
