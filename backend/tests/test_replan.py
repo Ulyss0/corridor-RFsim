@@ -1,11 +1,13 @@
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pytest
 
 from corridor.domain.commands import (
     CancelCut,
+    ChooseRoute,
     ConfirmCut,
+    DecideRoute,
     LaunchMission,
     RequestMission,
     ScheduleCut,
@@ -13,14 +15,21 @@ from corridor.domain.commands import (
     UpdateMission,
 )
 from corridor.domain.events import (
+    ChoiceKind,
+    CutCancelled,
     CutScheduled,
     Event,
     MissionCreated,
     MissionUpdated,
     Notification,
+    OnTimeout,
     PlanMetrics,
     PlanUpdated,
+    ProposedCut,
+    RouteChoice,
     RoutePoint,
+    RouteRequest,
+    RouteRequested,
 )
 from corridor.domain.geo import Grid, Position
 from corridor.domain.planner.plan import MissionPlan
@@ -28,7 +37,12 @@ from corridor.domain.scenario import Mission, Scenario
 from corridor.domain.state import Cut
 from corridor.domain.zones import mission_constraints
 from corridor.engine.clock import SimClock
-from corridor.engine.engine import PLAN_LEAD_WALL_S, CommandRejected, Engine
+from corridor.engine.engine import (
+    DECISION_LEAD_S,
+    PLAN_LEAD_WALL_S,
+    CommandRejected,
+    Engine,
+)
 from corridor.engine.replan import PlanDone, ProcessReplanner
 
 EW = "EW-OFFICER"
@@ -127,7 +141,7 @@ def schedule(engine: Engine) -> str:
 
 def test_every_cut_change_requests_a_plan(engine: Engine, replanner: FakeReplanner) -> None:
     cut_id = schedule(engine)
-    engine.submit(ConfirmCut(actor="EW-J3", cut=cut_id))
+    engine.submit(ConfirmCut(actor="CMD", cut=cut_id))
     engine.submit(SetClock(actor=EW, factor=10))
     engine.submit(CancelCut(actor=EW, cut=cut_id))
     assert [r.revision for r in replanner.requests] == [1, 2, 3]
@@ -146,6 +160,28 @@ def test_plan_is_published_and_kept_for_the_snapshot(
     assert (event.mission, event.revision) == ("M1", 1)
     assert event.status == "approved"
     assert engine.missions["M1"].plan == event
+
+
+def test_plan_carries_its_route_choices(
+    engine: Engine, replanner: FakeReplanner, published: list[Event]
+) -> None:
+    route = stub_plan().optimised_route
+    choice = RouteChoice(
+        kind="safe",
+        cuts=[],
+        route=route,
+        flight_s=0,
+        battery_used_pct=30,
+        saved_s=0,
+        saved_pct=0,
+    )
+    engine.request_plans()
+    request = replanner.requests[0]
+    request.done(request.revision, replace(stub_plan(), choices=[choice]))
+    (event,) = published
+    assert isinstance(event, PlanUpdated)
+    assert event.choices == [choice]
+    assert engine.missions["M1"].plan == event  # in the snapshot of a client joining later
 
 
 def test_stale_plan_is_dropped(
@@ -218,6 +254,7 @@ def test_process_replanner_runs_the_planner(scenario: Scenario) -> None:
     assert revision == 7
     assert plan is not None
     assert plan.status == "baseline"
+    assert [c.kind for c in plan.choices] == ["one_cut", "safe"]  # computed in the worker too
 
 
 def test_a_cut_replans_only_the_missions_it_concerns(
@@ -341,13 +378,272 @@ def test_updating_a_mission_replans_it_and_drops_the_old_plan(
     assert runtime.plan is not None and runtime.plan.revision == 2
 
 
-def test_only_its_pilot_or_the_command_updates_a_mission_on_the_ground(
+def test_only_its_pilot_updates_a_mission_on_the_ground(
     two_missions: Scenario, replanner: FakeReplanner, wall: list[float]
 ) -> None:
     engine = make_engine(two_missions, replanner, wall)
-    with pytest.raises(CommandRejected, match="only the pilot of M2"):
-        update_m2_onto_m1(engine, actor="PILOT-1")
-    update_m2_onto_m1(engine, actor="CMD")
+    for actor in ("PILOT-1", "CMD"):
+        with pytest.raises(CommandRejected, match="only the pilot of M2"):
+            update_m2_onto_m1(engine, actor=actor)
+    update_m2_onto_m1(engine)
     engine.state.missions["M2"] = "flying"
     with pytest.raises(CommandRejected, match="already flying"):
         update_m2_onto_m1(engine)
+
+
+# Route request workflow: the pilot picks a route, the command answers until the deadline.
+
+PILOT, COMMAND = "PILOT-1", "CMD"
+J3_CUT = ProposedCut(jammer="J3", start_s=900, end_s=1260)
+
+
+def choices_plan() -> MissionPlan:
+    """A plan whose safe route takes off at 600, its one_cut route at 700 with J3 cut."""
+    safe = [RoutePoint(lat=48.0, lon=11.0, t=600, action="fly")]
+    fast = [RoutePoint(lat=48.0, lon=11.0, t=700, action="fly")]
+
+    def choice(kind: ChoiceKind, cuts: list[ProposedCut], route: list[RoutePoint]) -> RouteChoice:
+        return RouteChoice(
+            kind=kind,
+            cuts=cuts,
+            route=route,
+            flight_s=500,
+            battery_used_pct=30,
+            saved_s=0 if kind == "safe" else 140,
+            saved_pct=0 if kind == "safe" else 20,
+        )
+
+    return replace(
+        stub_plan(),
+        status="baseline",
+        choices=[choice("one_cut", [J3_CUT], fast), choice("safe", [], safe)],
+    )
+
+
+def planned(engine: Engine, replanner: FakeReplanner, plan: MissionPlan | None = None) -> None:
+    """Every mission has its plan back."""
+    engine.request_plans()
+    for request in replanner.requests[-len(engine.missions) :]:
+        request.done(request.revision, plan or choices_plan())
+
+
+def requests_of(events: list[Event]) -> list[RouteRequest]:
+    return [e.request for e in events if isinstance(e, RouteRequested)]
+
+
+def notified(events: list[Event], to: str) -> list[Notification]:
+    return [e for e in events if isinstance(e, Notification) and e.to == to]
+
+
+def test_safe_choice_stands_at_once(engine: Engine, replanner: FakeReplanner) -> None:
+    planned(engine, replanner)
+    events = engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="safe"))
+    (request,) = requests_of(events)
+    assert (request.status, request.cuts, request.deadline_s) == ("accepted", [], None)
+    assert notified(events, COMMAND) == []
+    assert engine.state.cuts == {}
+
+
+def test_choice_needing_a_cut_asks_the_command(engine: Engine, replanner: FakeReplanner) -> None:
+    planned(engine, replanner)
+    asked = len(replanner.requests)
+    events = engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut"))
+    (cut,) = engine.state.cuts.values()
+    assert (cut.jammer, cut.start_s, cut.end_s, cut.status) == ("J3", 900, 1260, "scheduled")
+    assert (cut.requested_by, cut.requested_for) == (PILOT, "M1")
+    (request,) = requests_of(events)
+    assert request.status == "pending"
+    assert request.cuts == [cut.id]
+    assert request.deadline_s == 700 - DECISION_LEAD_S  # its take-off comes before the cut
+    (ask,) = notified(events, COMMAND)
+    assert ask.action is not None
+    assert (ask.action.command, ask.action.mission) == ("route.decide", "M1")
+    assert "the pilot flies the detour" in ask.text
+    assert len(replanner.requests) == asked + 1  # the route is replanned on the new cut
+
+
+def test_command_accepts(engine: Engine, replanner: FakeReplanner) -> None:
+    planned(engine, replanner)
+    engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut"))
+    with pytest.raises(CommandRejected, match="only the command"):
+        engine.submit(DecideRoute(actor=PILOT, mission="M1", accept=True))
+    events = engine.submit(DecideRoute(actor=COMMAND, mission="M1", accept=True))
+    (cut,) = engine.state.cuts.values()
+    assert cut.status == "confirmed"
+    (request,) = requests_of(events)
+    assert (request.status, request.decided_by) == ("accepted", COMMAND)
+    assert notified(events, "EW-J3")  # the operator carries the cut out
+    assert "accepted" in notified(events, PILOT)[0].text
+    with pytest.raises(CommandRejected, match="awaits an answer"):
+        engine.submit(DecideRoute(actor=COMMAND, mission="M1", accept=False))
+
+
+def test_command_refuses(engine: Engine, replanner: FakeReplanner) -> None:
+    planned(engine, replanner)
+    engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut"))
+    events = engine.submit(DecideRoute(actor=COMMAND, mission="M1", accept=False))
+    assert engine.state.cuts == {}
+    (request,) = requests_of(events)
+    assert (request.status, request.decided_by) == ("refused", COMMAND)
+    assert "detour" in notified(events, PILOT)[0].text
+
+
+@pytest.mark.parametrize("on_timeout", ["avoid", "cross"])
+def test_no_answer_by_the_deadline_is_a_refusal(
+    engine: Engine,
+    replanner: FakeReplanner,
+    wall: list[float],
+    on_timeout: OnTimeout,
+) -> None:
+    """Only the command cuts: without its answer, nothing is cut, whatever the plan B."""
+    planned(engine, replanner)
+    engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut", on_timeout=on_timeout))
+    engine.submit(SetClock(actor=COMMAND, paused=False))
+    wall[0] = (700 - DECISION_LEAD_S - 10) / 20  # 10 s before the deadline
+    assert requests_of(engine.tick()) == []
+    wall[0] = (700 - DECISION_LEAD_S) / 20
+    events = engine.tick()
+    (request,) = requests_of(events)
+    assert (request.status, request.decided_by) == ("refused", "timeout")
+    assert notified(events, COMMAND)  # told what happened without its answer
+    assert engine.state.cuts == {}
+
+
+def test_launch_without_an_answer_flies_the_safe_route(
+    engine: Engine, replanner: FakeReplanner
+) -> None:
+    planned(engine, replanner)
+    engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut"))
+    planned(engine, replanner, replace(choices_plan(), status="preview"))
+    events = engine.submit(LaunchMission(actor=PILOT, mission="M1"))
+    (request,) = requests_of(events)
+    assert (request.status, request.decided_by) == ("refused", "launch")
+    assert engine.state.cuts == {}
+    flight = engine.missions["M1"].flight
+    assert flight is not None
+    assert flight.route == choices_plan().choices[-1].route  # the safe one
+
+
+def test_launch_after_acceptance_waits_for_the_new_route(
+    engine: Engine, replanner: FakeReplanner
+) -> None:
+    planned(engine, replanner)
+    engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut"))
+    engine.submit(DecideRoute(actor=COMMAND, mission="M1", accept=True))
+    with pytest.raises(CommandRejected, match="being updated"):
+        engine.submit(LaunchMission(actor=PILOT, mission="M1"))
+    planned(engine, replanner, replace(choices_plan(), status="approved"))
+    engine.submit(LaunchMission(actor=PILOT, mission="M1"))
+
+
+def test_picking_again_withdraws_the_cuts_asked_before(
+    engine: Engine, replanner: FakeReplanner
+) -> None:
+    planned(engine, replanner)
+    engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut"))
+    events = engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="safe"))
+    assert engine.state.cuts == {}
+    assert any(isinstance(e, CutCancelled) for e in events)
+    request = engine.missions["M1"].request
+    assert request is not None
+    assert request.status == "accepted"
+
+
+def test_choice_rejections(engine: Engine, replanner: FakeReplanner, wall: list[float]) -> None:
+    with pytest.raises(CommandRejected, match="no plan yet"):
+        engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="safe"))
+    planned(engine, replanner)
+    for actor in (COMMAND, "EW-J3"):  # the command answers cuts, it does not pick routes
+        with pytest.raises(CommandRejected, match="only the pilot"):
+            engine.submit(ChooseRoute(actor=actor, mission="M1", kind="safe"))
+    with pytest.raises(CommandRejected, match="no fastest route"):
+        engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="fastest"))
+    engine.submit(SetClock(actor=COMMAND, paused=False))
+    wall[0] = (700 - DECISION_LEAD_S + 1) / 20
+    with pytest.raises(CommandRejected, match="too late"):
+        engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut"))
+
+
+@pytest.mark.parametrize("answer", [None, True], ids=["pending", "accepted"])
+def test_moving_a_mission_drops_its_route_request_and_cuts(
+    engine: Engine, replanner: FakeReplanner, answer: bool | None
+) -> None:
+    planned(engine, replanner)
+    engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut"))
+    if answer is not None:
+        engine.submit(DecideRoute(actor=COMMAND, mission="M1", accept=answer))
+    m1 = engine.scenario.missions[0]
+    events = engine.submit(
+        UpdateMission(
+            actor=PILOT, mission="M1", launch=m1.launch, target=m1.target, departure_s=900
+        )
+    )
+    assert any(isinstance(e, CutCancelled) for e in events)
+    assert engine.state.cuts == {}
+    assert engine.missions["M1"].request is None
+
+
+def test_a_route_saving_too_little_cannot_be_asked(
+    engine: Engine, replanner: FakeReplanner
+) -> None:
+    plan = choices_plan()
+    small = [
+        c.model_copy(update={"worth_asking": False}) if c.kind == "one_cut" else c
+        for c in plan.choices
+    ]
+    planned(engine, replanner, replace(plan, choices=small))
+    with pytest.raises(CommandRejected, match="saves too little"):
+        engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut"))
+    assert engine.state.cuts == {}
+
+
+def test_without_a_detour_the_drone_waits_for_the_answer(
+    engine: Engine, replanner: FakeReplanner
+) -> None:
+    """The pilot starts inside a jammer zone: the only route needs the cut."""
+    plan = choices_plan()
+    only_cut = replace(plan, status="preview", choices=[c for c in plan.choices if c.cuts])
+    planned(engine, replanner, only_cut)
+    engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut"))
+    with pytest.raises(CommandRejected, match="wait for the command"):
+        engine.submit(LaunchMission(actor=PILOT, mission="M1"))
+    events = engine.submit(DecideRoute(actor=COMMAND, mission="M1", accept=False))
+    assert "cannot start" in notified(events, PILOT)[0].text
+
+
+def test_after_a_refusal_the_drone_flies_the_detour(
+    engine: Engine, replanner: FakeReplanner
+) -> None:
+    planned(engine, replanner)
+    engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut"))
+    engine.submit(DecideRoute(actor=COMMAND, mission="M1", accept=False))
+    # The cut is gone: the replan comes back on the detour, flown at launch.
+    planned(engine, replanner, replace(choices_plan(), status="baseline"))
+    engine.submit(LaunchMission(actor=PILOT, mission="M1"))
+    flight = engine.missions["M1"].flight
+    assert flight is not None
+    assert flight.route == choices_plan().optimised_route
+
+
+@pytest.mark.parametrize("answer", ["refuse", "none"])
+def test_plan_b_straight_anyway_flies_through_the_jammer_on(
+    engine: Engine, replanner: FakeReplanner, answer: str
+) -> None:
+    planned(engine, replanner)
+    engine.submit(ChooseRoute(actor=PILOT, mission="M1", kind="one_cut", on_timeout="cross"))
+    if answer == "refuse":
+        events = engine.submit(DecideRoute(actor=COMMAND, mission="M1", accept=False))
+        assert "straight through J3 anyway" in notified(events, PILOT)[0].text
+        planned(engine, replanner, replace(choices_plan(), status="baseline"))
+    events = engine.submit(LaunchMission(actor=PILOT, mission="M1"))
+    assert engine.state.cuts == {}  # nothing cut without the command
+    flight = engine.missions["M1"].flight
+    assert flight is not None
+    assert flight.route == choices_plan().choices[0].route  # the direct route, not the detour
+    assert flight.through_jammers == {"J3"}
+    # The plan published at launch is the route flown: every view shows the straight route.
+    (published,) = [e for e in events if isinstance(e, PlanUpdated)]
+    assert published.status == "straight"
+    assert published.optimised_route == flight.route
+    assert published.revision == flight.revision
+    assert engine.missions["M1"].plan == published

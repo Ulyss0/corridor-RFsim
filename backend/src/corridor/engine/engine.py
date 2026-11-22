@@ -35,8 +35,10 @@ from typing import assert_never
 from corridor.domain.commands import (
     AddThreat,
     CancelCut,
+    ChooseRoute,
     Command,
     ConfirmCut,
+    DecideRoute,
     InjectDelay,
     LaunchMission,
     RemoveThreat,
@@ -59,12 +61,14 @@ from corridor.domain.events import (
     Notification,
     NotificationAction,
     PlanUpdated,
+    RouteRequest,
+    RouteRequested,
     ThreatAdded,
     ThreatRemoved,
 )
 from corridor.domain.geo import Grid, LocalFrame
 from corridor.domain.planner.layers import forbidden_cells
-from corridor.domain.planner.plan import MissionPlan
+from corridor.domain.planner.plan import MissionPlan, route_metrics
 from corridor.domain.safety import (
     Flight,
     LevelCells,
@@ -103,7 +107,20 @@ time it arrives."""
 
 
 FLYABLE = ("approved", "baseline")
-"""Plan statuses a drone may launch on. ``preview`` waits for the operator's confirmation."""
+"""Plan statuses a drone may launch on. ``preview`` waits for the command's confirmation."""
+
+DECISION_LEAD_S = 120.0
+"""The command answers a route request at the latest this long before the take-off or the
+first cut it needs, whichever comes first, so the jammer crews have time to act."""
+TIMEOUT_ACTOR = "timeout"
+KIND_LABEL = {
+    "fastest": "direct route (all cuts)",
+    "one_cut": "direct route (1 cut)",
+    "safe": "detour",
+}
+"""Route choices in the words of the front end: the detour goes around every jammer, a
+direct route goes through jammers during their cuts."""
+LAUNCH_ACTOR = "launch"
 
 
 class CommandRejected(Exception):
@@ -127,6 +144,8 @@ class MissionRuntime:
     revision: int = 0
     awaiting: int | None = None
     """Revision of the mission plan on its way, None when none is."""
+    request: RouteRequest | None = None
+    """The route the pilot picked, and the command's answer if it needs cuts."""
 
     def concerns(self, jammer: str) -> bool:
         return jammer in self.constraints.jammers
@@ -185,12 +204,8 @@ class Engine:
         """
         events = self._apply(command)
         self._publish(events)
+        self._replan_after(events)
         match command:
-            case ScheduleCut():
-                self.request_plans(m.mission.id for m in self._concerned(command.jammer))
-            case ConfirmCut() | CancelCut():
-                cut = next(e.cut for e in events if isinstance(e, CutConfirmed | CutCancelled))
-                self.request_plans(m.mission.id for m in self._concerned(cut.jammer))
             case RequestMission():
                 created = next(e.mission for e in events if isinstance(e, MissionCreated))
                 self.request_plans([created.id])
@@ -200,6 +215,16 @@ class Engine:
                 change = next(e for e in events if isinstance(e, ThreatAdded | ThreatRemoved))
                 self.request_plans(change.missions)
         return events
+
+    def _replan_after(self, events: list[Event]) -> None:
+        """Replan every mission concerned by a cut ``events`` scheduled, confirmed or
+        cancelled."""
+        changed = (CutScheduled, CutConfirmed, CutCancelled)
+        jammers = {e.cut.jammer for e in events if isinstance(e, changed)}
+        if jammers:
+            self.request_plans(
+                r.mission.id for r in self.missions.values() if jammers & set(r.constraints.jammers)
+            )
 
     def request_plans(self, mission_ids: Iterable[str] | None = None) -> None:
         """Ask for a plan of each mission (every one by default) on the current cuts, unless
@@ -248,6 +273,17 @@ class Engine:
         if now <= previous:
             return []
         events = self._cut_events(previous, now)
+        for runtime in self.missions.values():
+            request = runtime.request
+            if (
+                request is not None
+                and request.status == "pending"
+                and request.deadline_s is not None
+                and now >= request.deadline_s
+            ):
+                # No cut without the command: an unanswered request is refused; the pilot's
+                # plan B (detour, or straight through anyway) decides the flight.
+                events += self._resolve(runtime, False, TIMEOUT_ACTOR)
         stale = [
             runtime.mission.id
             for runtime in self.missions.values()
@@ -260,6 +296,7 @@ class Engine:
             if runtime.flight is not None:
                 events += self._fly(runtime, now)
         self._publish(events)
+        self._replan_after(events)
         if stale:
             self.request_plans(stale)
         return events
@@ -392,6 +429,10 @@ class Engine:
                 return self._request_mission(command)
             case UpdateMission():
                 return self._update_mission(command)
+            case ChooseRoute():
+                return self._choose_route(command)
+            case DecideRoute():
+                return self._decide_route(command)
             case LaunchMission():
                 return self._launch_mission(command)
             case InjectDelay():
@@ -446,7 +487,7 @@ class Engine:
         return [
             CutScheduled(cut=cut),
             Notification(
-                to=jammer.operator_callsign,
+                to=self.scenario.command_callsign,
                 text=text,
                 action=NotificationAction(command="cut.confirm", cut=cut.id),
             ),
@@ -477,12 +518,179 @@ class Engine:
             raise CommandRejected(f"unknown cut {command.cut}")
         if cut.status != "scheduled":
             raise CommandRejected(f"cut {cut.id} is already {cut.status}")
-        jammer = self.scenario.friendly_jammer(cut.jammer)
-        if jammer is None or command.actor != jammer.operator_callsign:
-            raise CommandRejected(f"only the operator of {cut.jammer} can confirm this cut")
+        if command.actor != self.scenario.command_callsign:
+            raise CommandRejected("only the command can confirm a cut")
+        return self._confirm(cut, command.actor)
+
+    def _confirm(self, cut: Cut, by: str) -> list[Event]:
+        """Confirm ``cut`` and tell its jammer operator, who carries it out."""
         confirmed = cut.model_copy(update={"status": "confirmed"})
         self.state.cuts[cut.id] = confirmed
-        return [CutConfirmed(cut=confirmed)]
+        jammer = self.scenario.friendly_jammer(cut.jammer)
+        operator = jammer.operator_callsign if jammer else cut.jammer
+        label = self.scenario.clock_label
+        text = (
+            f"Cut {cut.jammer} {label(cut.start_s)} to {label(cut.end_s)} confirmed by {by}: "
+            "switch off at the start, back on at the end."
+        )
+        return [CutConfirmed(cut=confirmed), Notification(to=operator, text=text)]
+
+    def _choose_route(self, command: ChooseRoute) -> list[Event]:
+        """The pilot picks a route of the current plan. ``safe`` stands at once; a route
+        needing cuts schedules them and asks the command, which has until the deadline.
+
+        Only the pilot picks: the command answers the cuts a route needs, it does not choose
+        the route."""
+        runtime = self._runtime(command.mission)
+        mission = runtime.mission
+        if command.actor != mission.pilot_callsign:
+            raise CommandRejected(f"only the pilot of {mission.id} can choose its route")
+        status = self.state.missions[mission.id]
+        if status != "planned":
+            raise CommandRejected(f"mission {mission.id} is already {status}")
+        if runtime.plan is None:
+            raise CommandRejected("no plan yet")
+        choice = next((c for c in runtime.plan.choices if c.kind == command.kind), None)
+        if choice is None:
+            raise CommandRejected(f"no {command.kind} route in the current plan")
+        if not choice.worth_asking:
+            raise CommandRejected("this route saves too little to ask the command for a cut")
+        deadline: float | None = None
+        if choice.cuts:
+            first = min([takeoff_s(choice.route), *(c.start_s for c in choice.cuts)])
+            deadline = first - DECISION_LEAD_S
+            if deadline < self.clock.now():
+                raise CommandRejected(
+                    "too late for the command to answer before take-off: fly the detour"
+                )
+            mine = (
+                set(runtime.request.cuts) if runtime.request and self._pending(runtime) else set()
+            )
+            for proposed in choice.cuts:
+                for other in self.state.cuts.values():
+                    if (
+                        other.id not in mine
+                        and other.jammer == proposed.jammer
+                        and proposed.start_s < other.end_s
+                        and other.start_s < proposed.end_s
+                    ):
+                        raise CommandRejected(f"overlaps cut {other.id}")
+        events = self._withdraw(runtime)
+        cuts = [
+            Cut(
+                id=f"cut-{next(self._cut_ids)}",
+                jammer=p.jammer,
+                start_s=p.start_s,
+                end_s=p.end_s,
+                status="scheduled",
+                requested_by=command.actor,
+                requested_for=mission.id,
+            )
+            for p in choice.cuts
+        ]
+        for cut in cuts:
+            self.state.cuts[cut.id] = cut
+            events.append(CutScheduled(cut=cut))
+        runtime.request = RouteRequest(
+            mission=mission.id,
+            kind=choice.kind,
+            cuts=[c.id for c in cuts],
+            saved_s=choice.saved_s,
+            saved_pct=choice.saved_pct,
+            deadline_s=deadline,
+            on_timeout=command.on_timeout,
+            route=choice.route,
+            jammers=[c.jammer for c in cuts],
+            status="pending" if cuts else "accepted",
+            decided_by=None if cuts else command.actor,
+        )
+        events.append(RouteRequested(request=runtime.request))
+        if deadline is not None:
+            label = self.scenario.clock_label
+            asked = ", ".join(f"{c.jammer} {label(c.start_s)} to {label(c.end_s)}" for c in cuts)
+            plan_b = (
+                "flies straight through anyway, jammer on"
+                if command.on_timeout == "cross"
+                else "flies the detour"
+            )
+            text = (
+                f"{command.actor} asks to cut {asked} for {mission.id} "
+                f"(-{choice.saved_s:.0f} s, -{choice.saved_pct:.0f}% flight time). "
+                f"Answer by {label(deadline)}. If refused or unanswered, the pilot {plan_b}."
+            )
+            action = NotificationAction(command="route.decide", mission=mission.id)
+            events.append(Notification(to=self.scenario.command_callsign, text=text, action=action))
+        return events
+
+    def _decide_route(self, command: DecideRoute) -> list[Event]:
+        runtime = self._runtime(command.mission)
+        if command.actor != self.scenario.command_callsign:
+            raise CommandRejected("only the command can answer a route request")
+        if not self._pending(runtime):
+            raise CommandRejected(f"no route request of {command.mission} awaits an answer")
+        return self._resolve(runtime, command.accept, command.actor)
+
+    @staticmethod
+    def _pending(runtime: MissionRuntime) -> bool:
+        return runtime.request is not None and runtime.request.status == "pending"
+
+    def _resolve(self, runtime: MissionRuntime, accept: bool, by: str) -> list[Event]:
+        """Answer the pending request of ``runtime``: confirm or cancel its cuts and tell the
+        pilot, and the command when the answer is not its own (timeout, launch)."""
+        request = runtime.request
+        assert request is not None
+        events: list[Event] = []
+        for cut_id in request.cuts:
+            cut = self.state.cuts.get(cut_id)
+            if cut is None:
+                continue
+            if accept:
+                events += self._confirm(cut, by)
+            else:
+                del self.state.cuts[cut_id]
+                events.append(CutCancelled(cut=cut))
+        runtime.request = request.model_copy(
+            update={"status": "accepted" if accept else "refused", "decided_by": by}
+        )
+        events.append(RouteRequested(request=runtime.request))
+        mission = runtime.mission
+        if accept:
+            text = f"{mission.id}: {KIND_LABEL[request.kind]} accepted ({by}), fly it as planned."
+        elif request.on_timeout == "cross":
+            through = ", ".join(request.jammers)
+            text = (
+                f"{mission.id}: {KIND_LABEL[request.kind]} refused ({by}). As chosen, the drone "
+                f"flies straight through {through} anyway: jammer on, control link at risk."
+            )
+        elif self._has_detour(runtime):
+            text = f"{mission.id}: {KIND_LABEL[request.kind]} refused ({by}), fly the detour."
+        else:
+            text = (
+                f"{mission.id}: {KIND_LABEL[request.kind]} refused ({by}). No route without a cut: "
+                "the mission cannot start. Ask again or move the launch point."
+            )
+        events.append(Notification(to=mission.pilot_callsign, text=text))
+        if by != self.scenario.command_callsign:
+            events.append(Notification(to=self.scenario.command_callsign, text=text))
+        return events
+
+    @staticmethod
+    def _has_detour(runtime: MissionRuntime) -> bool:
+        plan = runtime.plan
+        return plan is None or any(c.kind == "safe" for c in plan.choices)
+
+    def _withdraw(self, runtime: MissionRuntime) -> list[Event]:
+        """Drop the pending request of ``runtime`` and the cuts it asked for: the pilot picked
+        another route."""
+        if runtime.request is None or not self._pending(runtime):
+            return []
+        events: list[Event] = []
+        for cut_id in runtime.request.cuts:
+            cut = self.state.cuts.pop(cut_id, None)
+            if cut is not None:
+                events.append(CutCancelled(cut=cut))
+        runtime.request = None
+        return events
 
     def _request_mission(self, command: RequestMission) -> list[Event]:
         pilot = self.scenario.pilot(command.actor)
@@ -506,16 +714,20 @@ class Engine:
     def _update_mission(self, command: UpdateMission) -> list[Event]:
         runtime = self._runtime(command.mission)
         mission = runtime.mission
-        if command.actor not in (mission.pilot_callsign, self.scenario.command_callsign):
-            raise CommandRejected(f"only the pilot of {mission.id} or the command can change it")
+        if command.actor != mission.pilot_callsign:
+            raise CommandRejected(f"only the pilot of {mission.id} can change it")
         status = self.state.missions[mission.id]
         if status != "planned":
             raise CommandRejected(f"mission {mission.id} is already {status}")
+        cross_radars = (
+            mission.cross_radars if command.cross_radars is None else command.cross_radars
+        )
         updated = mission.model_copy(
             update={
                 "launch": command.launch,
                 "target": command.target,
                 "departure_s": command.departure_s,
+                "cross_radars": cross_radars,
             }
         )
         try:
@@ -528,13 +740,31 @@ class Engine:
         runtime.frame = fresh.frame
         runtime.shapes = fresh.shapes
         runtime.plan = None
+        # The route picked was for the old points: drop it, and the cuts it asked for.
+        dropped = self._drop_request(runtime)
         self.scenario = self.scenario.model_copy(
             update={
                 "missions": [updated if m.id == mission.id else m for m in self.scenario.missions]
             }
         )
         text = f"Mission {mission.id} changed by {command.actor}, computing the new route."
-        return [MissionUpdated(mission=updated), Notification(to=mission.pilot_callsign, text=text)]
+        return [
+            *dropped,
+            MissionUpdated(mission=updated),
+            Notification(to=mission.pilot_callsign, text=text),
+        ]
+
+    def _drop_request(self, runtime: MissionRuntime) -> list[Event]:
+        """Forget the route request of ``runtime``, answered or not, and cancel its cuts."""
+        if runtime.request is None:
+            return []
+        events: list[Event] = []
+        for cut_id in runtime.request.cuts:
+            cut = self.state.cuts.pop(cut_id, None)
+            if cut is not None:
+                events.append(CutCancelled(cut=cut))
+        runtime.request = None
+        return events
 
     def _next_mission_id(self) -> str:
         """``M<n>``, skipping ids the scenario already uses."""
@@ -649,23 +879,75 @@ class Engine:
         """With a planner, the drone flies the current plan, which must be flyable."""
         runtime = self._runtime(command.mission)
         mission = runtime.mission
-        if command.actor not in (mission.pilot_callsign, self.scenario.command_callsign):
-            raise CommandRejected(f"only the pilot of {mission.id} or the command can launch it")
+        if command.actor != mission.pilot_callsign:
+            raise CommandRejected(f"only the pilot of {mission.id} can launch it")
         status = self.state.missions[mission.id]
         if status != "planned":
             raise CommandRejected(f"mission {mission.id} is already {status}")
+        events: list[Event] = []
         if self._replanner is not None:
             plan = runtime.plan
             if plan is None:
                 raise CommandRejected("no plan yet")
-            if plan.status not in FLYABLE:
+            request = runtime.request
+            through: frozenset[str] = frozenset()
+            if (
+                request is not None
+                and request.cuts
+                and request.on_timeout == "cross"
+                and request.status in ("pending", "refused")
+            ):
+                # Plan B "straight anyway": the route picked, through the jammers still on.
+                route = request.route
+                through = frozenset(request.jammers)
+                if request.status == "pending":
+                    events += self._resolve(runtime, False, LAUNCH_ACTOR)
+            elif self._pending(runtime):
+                # Still no answer at take-off: the request lapses and the drone flies the detour.
+                safe = next((c for c in plan.choices if c.kind == "safe"), None)
+                if safe is None:
+                    raise CommandRejected(
+                        "no route without a cut (the mission starts in a jamming zone): "
+                        "wait for the command's answer"
+                    )
+                route = safe.route
+                events += self._resolve(runtime, False, LAUNCH_ACTOR)
+            elif (
+                request is not None
+                and request.status == "accepted"
+                and request.cuts
+                and plan.status != "approved"
+            ):
+                raise CommandRejected("the route is being updated after the answer: try again")
+            elif plan.status not in FLYABLE:
                 raise CommandRejected("the plan relies on a cut not confirmed yet")
-            route = plan.optimised_route
+            else:
+                route = plan.optimised_route
+            revision = plan.revision
+            if through:
+                grid = runtime.constraints.grid
+                # The plan becomes the route flown, so every view (map, mission card, altitude
+                # profile, a client joining later) shows the straight route, not the detour.
+                runtime.revision += 1
+                revision = runtime.revision
+                runtime.plan = plan.model_copy(
+                    update={
+                        "revision": revision,
+                        "status": "straight",
+                        "optimised_route": with_altitude(self.scenario.terrain, grid, route),
+                        "metrics": route_metrics(mission, plan.baseline_route, route),
+                        "profile": profile(self.scenario.terrain, route, grid),
+                        "choices": [],
+                    }
+                )
+                events.append(runtime.plan)
             # Launched after the planned take-off: the flight starts late by the difference.
             late = max(0.0, self.clock.now() - takeoff_s(route))
-            runtime.flight = Flight(route=route, revision=plan.revision, delay_s=late)
+            runtime.flight = Flight(
+                route=route, revision=revision, delay_s=late, through_jammers=through
+            )
         self.state.missions[mission.id] = "flying"
-        return [MissionStatusChanged(mission=mission.id, status="flying")]
+        return [*events, MissionStatusChanged(mission=mission.id, status="flying")]
 
     def _inject_delay(self, command: InjectDelay) -> list[Event]:
         runtime = self._runtime(command.mission)
@@ -689,4 +971,9 @@ def _plan_updated(
         baseline_route=with_altitude(terrain, grid, plan.baseline_route),
         optimised_route=with_altitude(terrain, grid, plan.optimised_route),
         profile=profile(terrain, plan.optimised_route, grid),
+        # Each route choice with its altitude above sea level too, as the planned route.
+        choices=[
+            c.model_copy(update={"route": with_altitude(terrain, grid, c.route)})
+            for c in plan.choices
+        ],
     )

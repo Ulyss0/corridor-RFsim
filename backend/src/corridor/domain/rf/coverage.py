@@ -8,6 +8,8 @@ for MapLibre GL, Cesium, and Leaflet map layers.
 from __future__ import annotations
 
 import math
+import struct
+import zlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -379,57 +381,54 @@ def compute_terrain_aware_jammer_ring(
     return ring
 
 
-def _heatmap_status_style(js_val: float) -> tuple[str, str, float]:
-    """Map J/S ratio in dB to status text, hex color, and opacity."""
-    if js_val < -6.0:
-        return "SAFE", "#20c997", 0.35
-    if js_val < 0.0:
-        return "CAUTION", "#fab005", 0.55
-    if js_val < 6.0:
-        return "CONTENTION", "#fd7e14", 0.65
-    return "JAMMED", "#e03131", 0.75
+# Heatmap J/S classes: (upper bound in dB, RGBA). Thresholds match the hover probe statuses.
+_HEATMAP_CLASSES: list[tuple[float, tuple[int, int, int, int]]] = [
+    (-6.0, (0x20, 0xC9, 0x97, 89)),  # SAFE, opacity 0.35
+    (0.0, (0xFA, 0xB0, 0x05, 140)),  # CAUTION, opacity 0.55
+    (6.0, (0xFD, 0x7E, 0x14, 166)),  # CONTENTION, opacity 0.65
+    (math.inf, (0xE0, 0x31, 0x31, 191)),  # JAMMED, opacity 0.75
+]
 
 
-def _make_heatmap_geometry(
-    p: Position,
-    d_lon: float,
-    d_lat: float,
-    cells: bool,
-) -> dict[str, Any]:
-    """Build GeoJSON Point or quad Polygon geometry for a heatmap cell."""
-    if cells:
-        lon, lat = p.lon, p.lat
-        return {
-            "type": "Polygon",
-            "coordinates": [
-                [
-                    [round(lon - d_lon, 6), round(lat - d_lat, 6)],
-                    [round(lon + d_lon, 6), round(lat - d_lat, 6)],
-                    [round(lon + d_lon, 6), round(lat + d_lat, 6)],
-                    [round(lon - d_lon, 6), round(lat + d_lat, 6)],
-                    [round(lon - d_lon, 6), round(lat - d_lat, 6)],
-                ]
-            ],
-        }
-    return {
-        "type": "Point",
-        "coordinates": [round(p.lon, 6), round(p.lat, 6)],
-    }
+@dataclass(frozen=True)
+class JsHeatmap:
+    """J/S ratio in dB over a lon/lat box, one value per pixel.
+
+    Rows run north to south, evenly spaced in Web Mercator y; columns run west to east, evenly
+    spaced in longitude. The image therefore drapes on a Web Mercator map without distortion.
+    """
+
+    js_db: np.ndarray
+    """Shape (rows, cols)."""
+    west: float
+    south: float
+    east: float
+    north: float
 
 
-def compute_js_heatmap_geojson(
+def _mercator_y(lat_deg: float) -> float:
+    return math.log(math.tan(math.pi / 4.0 + math.radians(lat_deg) / 2.0))
+
+
+def _distance_m(origin: Position, lons: np.ndarray, lats: np.ndarray) -> np.ndarray:
+    """Distance from ``origin`` in the same flat approximation as ``LocalFrame``, at least 1 m."""
+    x = np.radians(lons - origin.lon) * EARTH_RADIUS_M * math.cos(math.radians(origin.lat))
+    y = np.radians(lats - origin.lat) * EARTH_RADIUS_M
+    return np.maximum(1.0, np.hypot(x, y))
+
+
+def compute_js_heatmap(
     dem: DemProvider,
     pilot_pos: Position,
     pilot_eirp_w: float,
     jammers: list[tuple[str, Position, float]],
     band_or_freq_hz: str | float,
     bounds: tuple[float, float, float, float],
-    step_m: float = 250.0,
+    step_m: float = 50.0,
     drone_h_agl_m: float = 20.0,
     jammer_h_agl_m: float = 10.0,
-    cells: bool = False,
-) -> dict[str, Any]:
-    """Generate a dense regular grid of J/S jamming degree points for GPU heatmap rendering.
+) -> JsHeatmap:
+    """J/S ratio of the strongest jammer against the pilot link on a regular raster.
 
     Parameters:
         dem: Digital elevation model provider.
@@ -438,7 +437,7 @@ def compute_js_heatmap_geojson(
         jammers: Active jammers as (id, position, eirp_w).
         band_or_freq_hz: Link carrier frequency.
         bounds: (min_lat, min_lon, max_lat, max_lon) bounding box.
-        step_m: Grid spacing in metres.
+        step_m: Approximate pixel size in metres.
         drone_h_agl_m: Evaluated flight altitude above ground level.
     """
     freq_hz = (
@@ -446,115 +445,81 @@ def compute_js_heatmap_geojson(
         if isinstance(band_or_freq_hz, str)
         else float(band_or_freq_hz)
     )
-    pilot_eirp_dbm = watts_to_dbm(pilot_eirp_w)
-
     min_lat, min_lon, max_lat, max_lon = bounds
-    origin = Position(lat=min_lat, lon=min_lon)
-    frame = LocalFrame(origin)
+    width_m, height_m = LocalFrame(Position(lat=min_lat, lon=min_lon)).to_xy(
+        Position(lat=max_lat, lon=max_lon)
+    )
+    cols = max(1, math.ceil(width_m / step_m))
+    rows = max(1, math.ceil(height_m / step_m))
 
-    corner_x, corner_y = frame.to_xy(Position(lat=max_lat, lon=max_lon))
-    xs = np.arange(0.0, corner_x + 1e-3, step_m)
-    ys = np.arange(0.0, corner_y + 1e-3, step_m)
+    lons = min_lon + (np.arange(cols) + 0.5) * (max_lon - min_lon) / cols
+    y_north, y_south = _mercator_y(max_lat), _mercator_y(min_lat)
+    merc_ys = y_north - (np.arange(rows) + 0.5) * (y_north - y_south) / rows
+    lats = np.degrees(2.0 * np.arctan(np.exp(merc_ys)) - math.pi / 2.0)
+    lon_g, lat_g = np.meshgrid(lons, lats)
+    elevs = np.asarray(dem.get_elevations_lonlat(lon_g, lat_g), dtype=np.float64)
 
-    grid_pts: list[Position] = []
-    xy_pts: list[tuple[float, float]] = []
-    for y in ys:
-        for x in xs:
-            grid_pts.append(frame.to_position(x, y))
-            xy_pts.append((float(x), float(y)))
-
-    if not grid_pts:
-        return {"type": "FeatureCollection", "features": []}
-
-    elevs = np.array(dem.get_elevations(grid_pts), dtype=np.float64)
-
-    # Pilot link distances and free space path loss
-    p_frame = LocalFrame(pilot_pos)
-    p_coords = [p_frame.to_xy(p) for p in grid_pts]
-    p_dists = np.array([max(1.0, math.hypot(x, y)) for x, y in p_coords], dtype=np.float64)
     c_term = 20.0 * math.log10(4.0 * math.pi / SPEED_OF_LIGHT)
     fspl_const = 20.0 * math.log10(freq_hz) + c_term
+    wl_m = SPEED_OF_LIGHT / freq_hz
 
-    fspl_pilot = 20.0 * np.log10(np.maximum(1.0, p_dists)) + fspl_const
-    p_rx_pilot = pilot_eirp_dbm - fspl_pilot
+    p_dists = _distance_m(pilot_pos, lon_g, lat_g)
+    p_rx_pilot = watts_to_dbm(pilot_eirp_w) - (20.0 * np.log10(p_dists) + fspl_const)
 
-    # For each jammer, evaluate received power at all grid points
-    jammer_prx_list: list[np.ndarray] = []
+    max_jammer_prx = np.full(lon_g.shape, -140.0)
     for _j_id, j_pos, j_eirp_w in jammers:
-        j_eirp_dbm = watts_to_dbm(j_eirp_w)
-        j_frame = LocalFrame(j_pos)
-        j_coords = [j_frame.to_xy(p) for p in grid_pts]
-        j_dists = np.array([max(1.0, math.hypot(x, y)) for x, y in j_coords], dtype=np.float64)
-        fspl_j = 20.0 * np.log10(np.maximum(1.0, j_dists)) + fspl_const
+        j_dists = _distance_m(j_pos, lon_g, lat_g)
+        fspl_j = 20.0 * np.log10(j_dists) + fspl_const
 
-        # Multi-point terrain diffraction profiling along each ray (t = 0.2, 0.4, 0.6, 0.8)
-        j_elev = dem.get_elevation(j_pos)
-        t_fractions = [0.2, 0.4, 0.6, 0.8]
-        obs_list: list[np.ndarray] = []
-        for t in t_fractions:
-            t_coords = [((x * t), (y * t)) for x, y in j_coords]
-            t_pts = [j_frame.to_position(tx, ty) for tx, ty in t_coords]
-            t_elevs = np.array(dem.get_elevations(t_pts), dtype=np.float64)
-            ray_h = (
-                j_elev + jammer_h_agl_m + t * (elevs + drone_h_agl_m - (j_elev + jammer_h_agl_m))
+        # Terrain samples along the ray (t = 0.2, 0.4, 0.6, 0.8): highest obstacle above it
+        j_abs_h = dem.get_elevation(j_pos) + jammer_h_agl_m
+        max_obs = np.full(lon_g.shape, -np.inf)
+        for t in (0.2, 0.4, 0.6, 0.8):
+            t_elevs = dem.get_elevations_lonlat(
+                j_pos.lon + t * (lon_g - j_pos.lon), j_pos.lat + t * (lat_g - j_pos.lat)
             )
-            obs_list.append(t_elevs - ray_h)
+            ray_h = j_abs_h + t * (elevs + drone_h_agl_m - j_abs_h)
+            max_obs = np.maximum(max_obs, t_elevs - ray_h)
 
-        max_obs = np.maximum.reduce(obs_list)
-        # Compute ITU-R knife-edge diffraction loss
-        wl_m = SPEED_OF_LIGHT / freq_hz
+        # ITU-R knife-edge diffraction loss
         geom_factor = np.sqrt(2.0 / (wl_m * np.maximum(1.0, j_dists * 0.25)))
         nu_arr = np.maximum(0.0, max_obs) * geom_factor
         term = np.sqrt(np.maximum(0.0, (nu_arr - 0.1) ** 2) + 1.0) + nu_arr - 0.1
         diff_loss = np.where(max_obs > 0, 6.9 + 20.0 * np.log10(np.maximum(1e-4, term)), 0.0)
 
-        p_rx_j = j_eirp_dbm - (fspl_j + diff_loss)
-        jammer_prx_list.append(p_rx_j)
+        p_rx_j = watts_to_dbm(j_eirp_w) - (fspl_j + diff_loss)
+        max_jammer_prx = np.maximum(max_jammer_prx, p_rx_j)
 
-    if jammer_prx_list:
-        max_jammer_prx = np.maximum.reduce(jammer_prx_list)
-    else:
-        max_jammer_prx = np.full(len(grid_pts), -140.0)
+    # Below the receiver noise floor (-105 dBm) the jammer is negligible: J/S clamped to -50 dB
+    js_db = np.where(max_jammer_prx < -105.0, -50.0, max_jammer_prx - p_rx_pilot)
+    return JsHeatmap(js_db=js_db, west=min_lon, south=min_lat, east=max_lon, north=max_lat)
 
-    # Physical thermal noise floor for receiver (-105 dBm).
-    # Beyond the jammer's physical footprint, jammer power is negligible
-    negligible_mask = max_jammer_prx < -105.0
-    effective_j_prx = np.where(negligible_mask, -150.0, max_jammer_prx)
 
-    # J/S ratio in dB: where jammer is negligible, J/S is clamped to -50 dB (safe green)
-    js_arr = np.where(negligible_mask, -50.0, effective_j_prx - p_rx_pilot)
+def heatmap_png(heatmap: JsHeatmap) -> bytes:
+    """The heatmap as an RGBA PNG, one pixel per value, colored by J/S class."""
+    upper_bounds = np.array([b for b, _ in _HEATMAP_CLASSES[:-1]])
+    palette = np.array([c for _, c in _HEATMAP_CLASSES], dtype=np.uint8)
+    rgba = palette[np.searchsorted(upper_bounds, heatmap.js_db, side="right")]
+    return _encode_png_rgba(rgba)
 
-    # Weight mapping: base 0.12 (Safe J/S <= -6 dB) up to 1.0 (Deadly J/S >= +12 dB)
-    # Safe zones behind mountains and far from jammers have base weight that renders as solid GREEN
-    weights = 0.12 + 0.88 * np.clip((js_arr + 6.0) / 18.0, 0.0, 1.0)
 
-    half = step_m / 2.0
-    d_lat = math.degrees(half / EARTH_RADIUS_M)
-    d_lon = math.degrees(half / (EARTH_RADIUS_M * max(1e-6, frame._cos_lat)))
+def _encode_png_rgba(rgba: np.ndarray) -> bytes:
+    """Minimal PNG encoder for an 8-bit RGBA array of shape (rows, cols, 4)."""
+    rows, cols, _ = rgba.shape
+    no_filter = np.zeros((rows, 1), dtype=np.uint8)
+    raw = np.hstack([no_filter, rgba.reshape(rows, cols * 4)]).tobytes()
 
-    features: list[dict[str, Any]] = []
-    for i, p in enumerate(grid_pts):
-        js_val = float(js_arr[i])
-        status, color, opacity = _heatmap_status_style(js_val)
-        geom = _make_heatmap_geometry(p, d_lon, d_lat, cells)
-        features.append(
-            {
-                "type": "Feature",
-                "geometry": geom,
-                "properties": {
-                    "weight": round(float(weights[i]), 3),
-                    "js_db": round(js_val, 1),
-                    "status": status,
-                    "color": color,
-                    "opacity": opacity,
-                    "p_jammer_dbm": round(float(max_jammer_prx[i]), 1),
-                    "p_pilot_dbm": round(float(p_rx_pilot[i]), 1),
-                    "elev_m": round(float(elevs[i]), 0),
-                },
-            }
-        )
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(tag + data)
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
 
-    return {"type": "FeatureCollection", "features": features}
+    header = struct.pack(">IIBBBBB", cols, rows, 8, 6, 0, 0, 0)  # 8-bit, RGBA
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(raw, 6))
+        + chunk(b"IEND", b"")
+    )
 
 
 def _probe_status(js_db: float) -> str:

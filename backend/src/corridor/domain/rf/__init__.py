@@ -3,17 +3,19 @@
 Phase 1 & 2: DEM ingestion, profile extraction, Earth curvature, and Line-of-Sight analysis.
 Phase 3: Fresnel clearance, Knife-Edge diffraction, link budget, and terrain-aware J/S.
 Phase 4: Raster coverage grid, polar ray-casting viewshed, and GeoJSON contour export.
-Continuous Heatmap: GPU point heatmap grids and real-time hover probing.
+Continuous heatmap: J/S raster rendered as a PNG image, and real-time hover probing.
 """
 
 from corridor.domain.rf.coverage import (
     DEFAULT_CONTOURS,
     ContourLevel,
+    JsHeatmap,
     PolarCoverageResult,
-    compute_js_heatmap_geojson,
+    compute_js_heatmap,
     compute_polar_coverage,
     compute_terrain_aware_jammer_ring,
     extract_polar_contour_ring,
+    heatmap_png,
     polar_coverage_to_geojson,
     probe_point_rf,
 )
@@ -45,6 +47,7 @@ __all__ = [
     "DiffractionResult",
     "ElevationProfile",
     "HillFeature",
+    "JsHeatmap",
     "JsResult",
     "LinkBudgetResult",
     "LosResult",
@@ -53,7 +56,7 @@ __all__ = [
     "RasterDem",
     "SyntheticDem",
     "compute_diffraction",
-    "compute_js_heatmap_geojson",
+    "compute_js_heatmap",
     "compute_link_budget",
     "compute_los",
     "compute_polar_coverage",
@@ -65,6 +68,7 @@ __all__ = [
     "free_space_path_loss_db",
     "frequency_to_wavelength",
     "fresnel_radius",
+    "heatmap_png",
     "knife_edge_loss_db",
     "parse_band_to_hz",
     "polar_coverage_to_geojson",

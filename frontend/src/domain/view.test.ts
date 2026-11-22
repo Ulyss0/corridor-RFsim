@@ -13,6 +13,7 @@ import {
   parsePosition,
   positionAt,
   routePhases,
+  startsInside,
 } from './view'
 
 describe('domain/view', () => {
@@ -187,6 +188,19 @@ describe('mission request helpers', () => {
     expect(nextClockTime(start, 600, '9:00')).toBe(19 * 3600)
     expect(nextClockTime(start, 600, '25:00')).toBeNull()
     expect(nextClockTime(start, 600, 'soon')).toBeNull()
+  })
+
+  it('startsInside: jammer zones holding the launch, radars left out', () => {
+    const square: Position[] = [
+      { lat: 0, lon: 0 },
+      { lat: 0, lon: 1 },
+      { lat: 1, lon: 1 },
+      { lat: 1, lon: 0 },
+    ]
+    const jammer: Zone = { threat: 'J1', kind: 'friendly_jammer', forbidden: 'inside', ring: square }
+    const radar: Zone = { threat: 'R1', kind: 'radar', forbidden: 'inside', ring: square }
+    expect(startsInside([jammer, radar], { lat: 0.5, lon: 0.5 }).map((z) => z.threat)).toEqual(['J1'])
+    expect(startsInside([jammer, radar], { lat: 2, lon: 2 })).toEqual([])
   })
 })
 
