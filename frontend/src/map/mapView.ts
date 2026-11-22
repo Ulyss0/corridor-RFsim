@@ -5,7 +5,7 @@ import type { GeoJSONSource, ImageSource, Map as MlMap, StyleSpecification } fro
 import type { Feature, FeatureCollection } from 'geojson'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
-import type { ChoiceKind, Grid, PlanUpdated, Position, RouteChoice, RoutePoint, Scenario, Zone } from '../api/protocol'
+import type { ChoiceKind, Grid, PlanUpdated, ProfilePoint, Position, RouteChoice, RoutePoint, Scenario, Zone } from '../api/protocol'
 import { durationLabel, pointAlong } from '../domain/view'
 import { boundsOf, gridBounds, type ZoneState } from '../domain/view'
 import { levelColor, levelIndex } from './levels'
@@ -203,12 +203,19 @@ export interface MapView {
   setLayerVisibility(vis: LayerVisibility): void
   set3D(enabled: boolean): void
   is3D(): boolean
+  /** Screenshots: the selected mission's zones at every flight level, drawn in 3D as slabs. */
+  setZones3d(zones: FeatureCollection | null, levels: readonly number[]): void
+  /** Screenshots: the selected route at its altitude, drawn in 3D as a band. */
+  setRoute3d(profile: readonly ProfilePoint[], levels: readonly number[]): void
   fitScene(): void
   /** Frames these points: centred on one (zoom kept), fitted around several. */
   frame(points: Position[]): void
   centerOnDrone(pos?: Position | null): void
   destroy(): void
 }
+
+/** Real scale: the buildings are extruded to their real height over this terrain. */
+const TERRAIN_EXAGGERATION = 1
 
 // MapLibre resolves its worker relative to its own module, which breaks once Vite bundles it.
 maplibregl.setWorkerUrl(workerUrl)
@@ -232,6 +239,10 @@ export function createMapView(container: HTMLElement): MapView {
   let scene: Scene | null = null
   let fitted = ''
   let states: Record<string, ZoneState> = {}
+  // Screenshots branch: 3D buildings, zones as slabs per level, the route as a band in the air.
+  let zones3d: { zones: FeatureCollection; levels: readonly number[] } | null = null
+  let route3d: { profile: readonly ProfilePoint[]; levels: readonly number[] } | null = null
+  let route3dKey = ''
   let visibility: Required<LayerVisibility> = { grid: true, baseline: true, zones: true, rf: true, heatmap: false, relief: true, buildings: true }
   const markers: maplibregl.Marker[] = []
   const drones = new Map<string, maplibregl.Marker>()
@@ -264,11 +275,79 @@ export function createMapView(container: HTMLElement): MapView {
     if (loaded) (map.getSource(source) as GeoJSONSource | undefined)?.setData(data)
   }
 
+  /** Each level's outlines as a slab from halfway down to the level below to halfway up to
+   * the level above (from the ground for the lowest): the zone as a volume, shrinking or
+   * growing with height. Heights are above the terrain surface. */
+  const renderZones3d = () => {
+    if (!zones3d) {
+      setData('zones-3d', empty())
+      return
+    }
+    const { zones, levels } = zones3d
+    const bound = (i: number, up: boolean): number => {
+      if (up) return i + 1 < levels.length ? (levels[i] + levels[i + 1]) / 2 : levels[i] + (levels[i] - (levels[i - 1] ?? 0)) / 2
+      return i > 0 ? (levels[i - 1] + levels[i]) / 2 : 0
+    }
+    const features: Feature[] = zones.features.map((f) => {
+      const i = Number(f.properties?.level ?? 0)
+      const kind = f.properties?.kind as LevelKind
+      const { color } = kindStyle(kind, states[String(f.properties?.threat ?? '')] ?? 'on')
+      return { ...f, properties: { ...f.properties, color, base: bound(i, false), top: bound(i, true) - 2 } }
+    })
+    setData('zones-3d', { type: 'FeatureCollection', features })
+  }
+
+  /** The route as a band 8 m wide and 6 m thick at its altitude above sea level, placed over the
+   * terrain MapLibre shows (queried where it is loaded, else our ground). */
+  const renderRoute3d = () => {
+    if (!route3d || route3d.profile.length < 2 || !loaded) {
+      if (route3dKey !== '') setData('route-3d', empty())
+      route3dKey = ''
+      return
+    }
+    const { profile, levels } = route3d
+    const ground = (p: ProfilePoint): number => {
+      const terrain = is3dMode ? map.queryTerrainElevation([p.lon, p.lat]) : null
+      return terrain ?? p.ground_m
+    }
+    const half = 4
+    const features: Feature[] = []
+    for (let k = 0; k + 1 < profile.length; k++) {
+      const a = profile[k]
+      const b = profile[k + 1]
+      if (a.amsl_m === null || b.amsl_m === null) continue
+      const cos = Math.cos((a.lat * Math.PI) / 180)
+      const dx = (b.lon - a.lon) * cos * 111320
+      const dy = (b.lat - a.lat) * 110540
+      const len = Math.hypot(dx, dy) || 1
+      const nx = (-dy / len) * half
+      const ny = (dx / len) * half
+      const off = (p: ProfilePoint, sx: number): [number, number] => [
+        p.lon + (sx * nx) / (cos * 111320),
+        p.lat + (sx * ny) / 110540,
+      ]
+      const h = ((a.amsl_m - ground(a)) + (b.amsl_m - ground(b))) / 2
+      const index = Math.max(levelIndex(levels, a.alt_m), levelIndex(levels, b.alt_m))
+      features.push({
+        type: 'Feature',
+        properties: { color: index >= 0 ? levelColor(index) : COLORS.optimised, base: Math.max(0, h - 3), top: Math.max(3, h + 3) },
+        geometry: { type: 'Polygon', coordinates: [[off(a, 1), off(b, 1), off(b, -1), off(a, -1), off(a, 1)]] },
+      })
+    }
+    const key = features.map((f) => `${Math.round(Number(f.properties?.top))}`).join(',')
+    if (key === route3dKey) return
+    route3dKey = key
+    setData('route-3d', { type: 'FeatureCollection', features })
+  }
+
   const applyVisibility = () => {
     if (!loaded) return
     const v = (on: boolean) => (on ? 'visible' : 'none')
     map.setLayoutProperty('hillshade-relief', 'visibility', v(visibility.relief))
-    map.setLayoutProperty('buildings-fill', 'visibility', v(visibility.buildings))
+    map.setLayoutProperty('buildings-fill', 'visibility', v(visibility.buildings && !is3dMode))
+    map.setLayoutProperty('buildings-3d', 'visibility', v(visibility.buildings && is3dMode))
+    map.setLayoutProperty('zones-3d', 'visibility', v(visibility.zones && is3dMode))
+    map.setLayoutProperty('route-3d', 'visibility', v(is3dMode))
     map.setLayoutProperty('grid-line', 'visibility', v(visibility.grid))
     map.setLayoutProperty('route-baseline', 'visibility', v(visibility.baseline))
     map.setLayoutProperty('zones-fill', 'visibility', v(visibility.zones))
@@ -496,10 +575,55 @@ export function createMapView(container: HTMLElement): MapView {
         map.getCanvas().style.cursor = ''
       })
     }
+    // Screenshots: 3D buildings, zone slabs per level and the route band, shown in 3D only.
+    map.addLayer({
+      id: 'buildings-3d',
+      type: 'fill-extrusion',
+      source: 'buildings',
+      layout: { visibility: 'none' },
+      paint: {
+        'fill-extrusion-color': BUILDING_COLOR,
+        'fill-extrusion-height': ['coalesce', ['get', 'height_m'], 10],
+        'fill-extrusion-base': 0,
+        'fill-extrusion-opacity': 0.92,
+        'fill-extrusion-vertical-gradient': true,
+      },
+    })
+    for (const id of ['zones-3d', 'route-3d']) {
+      map.addSource(id, { type: 'geojson', data: pending[id] ?? empty() })
+    }
+    map.addLayer({
+      id: 'zones-3d',
+      type: 'fill-extrusion',
+      source: 'zones-3d',
+      layout: { visibility: 'none' },
+      paint: {
+        'fill-extrusion-color': ['get', 'color'],
+        'fill-extrusion-base': ['get', 'base'],
+        'fill-extrusion-height': ['get', 'top'],
+        'fill-extrusion-opacity': 0.3,
+      },
+    })
+    map.addLayer({
+      id: 'route-3d',
+      type: 'fill-extrusion',
+      source: 'route-3d',
+      layout: { visibility: 'none' },
+      paint: {
+        'fill-extrusion-color': ['get', 'color'],
+        'fill-extrusion-base': ['get', 'base'],
+        'fill-extrusion-height': ['get', 'top'],
+        'fill-extrusion-opacity': 0.95,
+      },
+    })
+    // Terrain tiles load after the 3D switch: place the band again once they are in.
+    map.on('idle', () => {
+      if (is3dMode) renderRoute3d()
+    })
     loaded = true
     applyHeatmap()
     if (is3dMode) {
-      map.setTerrain({ source: 'terrain-dem', exaggeration: 2.8 })
+      map.setTerrain({ source: 'terrain-dem', exaggeration: TERRAIN_EXAGGERATION })
     }
     applyVisibility()
   })
@@ -590,6 +714,7 @@ export function createMapView(container: HTMLElement): MapView {
     setZoneStates(s) {
       states = s
       renderZones()
+      renderZones3d()
     },
     setRoutes(routes) {
       const levels = scene?.scenario.terrain.levels_m ?? []
@@ -693,15 +818,26 @@ export function createMapView(container: HTMLElement): MapView {
       is3dMode = enabled
       if (!loaded) return
       if (enabled) {
-        map.setTerrain({ source: 'terrain-dem', exaggeration: 2.8 })
+        map.setTerrain({ source: 'terrain-dem', exaggeration: TERRAIN_EXAGGERATION })
         map.easeTo({ pitch: 62, bearing: -20, duration: 800 })
       } else {
         map.setTerrain(null)
         map.easeTo({ pitch: 0, bearing: 0, duration: 600 })
       }
+      applyVisibility()
+      renderRoute3d()
     },
     is3D() {
       return is3dMode
+    },
+    setZones3d(zones, levels) {
+      zones3d = zones ? { zones, levels } : null
+      renderZones3d()
+    },
+    setRoute3d(profile, levels) {
+      route3d = { profile, levels }
+      route3dKey = '-'
+      renderRoute3d()
     },
     fitScene() {
       if (!scene || scene.grids.length === 0) return

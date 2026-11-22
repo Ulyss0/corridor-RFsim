@@ -94,7 +94,7 @@ export function MapPanel() {
   }, [])
 
   const is3dScenario = snapshot?.scenario.terrain.mode === '3d'
-  const levels = snapshot?.scenario.terrain.levels_m ?? []
+  const levels = useMemo(() => snapshot?.scenario.terrain.levels_m ?? [], [snapshot])
 
   // 3D zones of the selected mission: fetched again with each snapshot (threats added or removed
   // come with one), shown one level at a time.
@@ -117,6 +117,17 @@ export function MapPanel() {
     const features = zones3d.zones.features.filter((f) => f.properties?.level === level)
     return { ...zones3d.zones, features }
   }, [is3dScenario, zones3d, selected, level])
+
+  // Screenshots: every level's zones as slabs and the selected route as a band, in 3D view.
+  useEffect(() => {
+    const zones = is3dScenario && zones3d?.mission === selected ? zones3d.zones : null
+    view.current?.setZones3d(zones, levels)
+  }, [is3dScenario, zones3d, selected, levels])
+
+  const selectedProfile = selectedView?.plan?.profile
+  useEffect(() => {
+    view.current?.setRoute3d(selectedProfile ?? [], levels)
+  }, [selectedProfile, levels])
 
   // Scene: every grid in view, the selected mission's zones over the nominal footprints. Grids
   // and zones only come with the snapshot, so plans and drones do not redraw it.
