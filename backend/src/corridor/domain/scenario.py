@@ -129,6 +129,13 @@ class Drone(Model):
     id: str
     band: str
     link_eirp_w: float = Field(gt=0, description="EIRP of the pilot's control link, watts.")
+    link_min_dbm: float = Field(
+        default=-100.0,
+        description=(
+            "Weakest control link signal the drone still uses, dBm (receiver sensitivity plus a"
+            " margin). In 3D, cells where the pilot's signal is weaker are forbidden."
+        ),
+    )
     cruise_speed_mps: float = Field(gt=0)
     battery_max_s: float = Field(gt=0, description="Flight time on a full battery.")
 
@@ -160,6 +167,13 @@ class Mission(Model):
     target: Position
     band: str
     link_eirp_w: float = Field(gt=0, description="EIRP of the pilot's control link, watts.")
+    link_min_dbm: float = Field(
+        default=-100.0,
+        description=(
+            "Weakest control link signal the drone still uses, dBm (receiver sensitivity plus a"
+            " margin). In 3D, cells where the pilot's signal is weaker are forbidden."
+        ),
+    )
     cruise_speed_mps: float = Field(gt=0)
     battery_max_s: float = Field(gt=0, description="Flight time on a full battery.")
     departure_s: float = Field(ge=0, description="Earliest departure.")
@@ -317,6 +331,7 @@ def _drone_fields(drone: Drone) -> dict[str, Any]:
         "drone_id": drone.id,
         "band": drone.band,
         "link_eirp_w": drone.link_eirp_w,
+        "link_min_dbm": drone.link_min_dbm,
         "cruise_speed_mps": drone.cruise_speed_mps,
         "battery_max_s": drone.battery_max_s,
     }

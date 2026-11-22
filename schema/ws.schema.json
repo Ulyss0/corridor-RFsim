@@ -574,6 +574,12 @@
           "title": "Link Eirp W",
           "type": "number"
         },
+        "link_min_dbm": {
+          "default": -100.0,
+          "description": "Weakest control link signal the drone still uses, dBm (receiver sensitivity plus a margin). In 3D, cells where the pilot's signal is weaker are forbidden.",
+          "title": "Link Min Dbm",
+          "type": "number"
+        },
         "cruise_speed_mps": {
           "exclusiveMinimum": 0,
           "title": "Cruise Speed Mps",
@@ -590,6 +596,7 @@
         "id",
         "band",
         "link_eirp_w",
+        "link_min_dbm",
         "cruise_speed_mps",
         "battery_max_s"
       ],
@@ -986,6 +993,12 @@
           "title": "Link Eirp W",
           "type": "number"
         },
+        "link_min_dbm": {
+          "default": -100.0,
+          "description": "Weakest control link signal the drone still uses, dBm (receiver sensitivity plus a margin). In 3D, cells where the pilot's signal is weaker are forbidden.",
+          "title": "Link Min Dbm",
+          "type": "number"
+        },
         "cruise_speed_mps": {
           "exclusiveMinimum": 0,
           "title": "Cruise Speed Mps",
@@ -1018,6 +1031,7 @@
         "target",
         "band",
         "link_eirp_w",
+        "link_min_dbm",
         "cruise_speed_mps",
         "battery_max_s",
         "departure_s",

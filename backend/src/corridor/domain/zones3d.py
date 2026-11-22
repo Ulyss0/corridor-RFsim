@@ -31,8 +31,12 @@ Losses are cached per emitter, grid and terrain (``loss_field``): a cut changes 
 threat added or removed only computes what is new. On flat ground with every path clear, the
 zone at a level is the 2D disc, up to the altitude difference.
 
+The pilot's minimum signal: the link is also lost, jammer or not, where the pilot's signal is
+below ``Mission.link_min_dbm`` (``link_lost``): behind a hill or a tower block seen from the
+pilot, or simply too far.
+
 Not here: the margin for an enemy jammer's position error and the masks over time (3D masks),
-the pilot's minimum signal (``pilot_signal`` is its input), radars (2D discs for now).
+radars (2D discs for now).
 """
 
 from __future__ import annotations
@@ -96,6 +100,11 @@ def jamming_zones(scenario: Scenario, mission: Mission, grid: Grid) -> dict[str,
 
 def forbidden(scenario: Scenario, js_db: Field) -> npt.NDArray[np.bool_]:
     return js_db >= scenario.js_threshold_db
+
+
+def link_lost(scenario: Scenario, mission: Mission, grid: Grid) -> npt.NDArray[np.bool_]:
+    """Cells and levels where the pilot's signal is below ``mission.link_min_dbm``."""
+    return pilot_signal(scenario, mission, grid) < mission.link_min_dbm
 
 
 def pilot_signal(scenario: Scenario, mission: Mission, grid: Grid) -> Field:

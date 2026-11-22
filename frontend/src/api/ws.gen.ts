@@ -147,6 +147,10 @@ export type Band = string;
  * EIRP of the pilot's control link, watts.
  */
 export type LinkEirpW = number;
+/**
+ * Weakest control link signal the drone still uses, dBm (receiver sensitivity plus a margin). In 3D, cells where the pilot's signal is weaker are forbidden.
+ */
+export type LinkMinDbm = number;
 export type CruiseSpeedMps = number;
 /**
  * Flight time on a full battery.
@@ -438,6 +442,10 @@ export type Band1 = string;
  * EIRP of the pilot's control link, watts.
  */
 export type LinkEirpW1 = number;
+/**
+ * Weakest control link signal the drone still uses, dBm (receiver sensitivity plus a margin). In 3D, cells where the pilot's signal is weaker are forbidden.
+ */
+export type LinkMinDbm1 = number;
 export type CruiseSpeedMps1 = number;
 /**
  * Flight time on a full battery.
@@ -784,6 +792,7 @@ export interface Mission6 {
   target: Position1;
   band: Band;
   link_eirp_w: LinkEirpW;
+  link_min_dbm: LinkMinDbm;
   cruise_speed_mps: CruiseSpeedMps;
   battery_max_s: BatteryMaxS;
   departure_s: DepartureS2;
@@ -1147,6 +1156,7 @@ export interface Drone {
   id: Id6;
   band: Band1;
   link_eirp_w: LinkEirpW1;
+  link_min_dbm: LinkMinDbm1;
   cruise_speed_mps: CruiseSpeedMps1;
   battery_max_s: BatteryMaxS1;
 }
