@@ -64,11 +64,17 @@ backend/src/corridor/
       schemas.py  wire envelopes, Snapshot, Ack, Error
       audience.py who sees what: viewer (callsign, role), scope, event filter, filtered snapshot
       hub.py      fan-out of server messages to connected clients, through the audience filter
-      app.py      FastAPI app, /ws endpoint
+      app.py      FastAPI app, /ws endpoint, /api/export/* (route export over HTTP, per mission)
       server.py   corridor-server entry point
       schema.py   corridor-schema: JSON Schema export
     tak/
       bridge.py   TakBridge: engine events -> CoT through OTS (routes, zones, drones, GeoChat)
+  export/
+    route.py      FlightRoute: plan route -> waypoints (altitude, arrive/depart, holds), latest
+                  take-off from the safety rule, pilot briefing
+    firmware.py   INAV MW XML mission, ArduPilot QGC WPL 110 mission
+    atak.py       ATAK route (b-m-r) and GeoChat DM addressed to the pilot, delete, deliver()
+    cli.py        corridor-export: plan offline, write the files, send to / revoke on ATAK
   tak/            CoT client and encoders (shapes, markers, GeoChat, delete), corridor-tak CLI
 backend/scenarios/demo.json   demo scenario: M1 (J3 between pilot and target, radar to the side, enemy
                               jammer) and M2 12.7 km south with its own jammer J4
@@ -84,7 +90,8 @@ command's stay in the web front end). Full picture again every 15 s; reconnects 
 One way: ATAK input does not become commands yet, and the audience rules do not apply to it.
 
 Dependency rule: `domain` imports nothing from `engine` or `adapters`; `engine` imports nothing
-from `adapters`. It can be enforced later with `import-linter` if needed.
+from `adapters`. `export` reads domain types only (plan routes, scenario, cuts) and uses `tak` to
+send; `adapters` call it. It can be enforced later with `import-linter` if needed.
 
 ```
              commands                         commands
@@ -956,6 +963,10 @@ The defaults below do not change the layout; they live in the planner or in `saf
 | Replan lead time | 3 wall-clock seconds (`PLAN_LEAD_WALL_S`); two queued plans can exceed it |
 | Pilot minimum signal (41) | `link_min_dbm` per drone, default -100 dBm (quoted sensitivities of drone control receivers run from about -95 to -110 dBm; to set per drone with the team). 3D only: in 2D free space the range at -100 dBm is far past any grid |
 | Relay backhaul | a relay is always linked to the pilot and never jammed itself; its own link to the pilot (radio or wired) is not modelled. Hand-over between connection points is instant |
+| Export altitude | one value for the whole route (default 100 m above launch), even when the 3D planner picked flight levels |
+| Export waypoints | every turn of the grid route (about 20 on the demo detour); no simplification, a shortcut could clip a zone |
+| ATAK delivery | on demand (`POST /api/export/atak?mission_id=...`); not tied to an approval step yet; same route uid per mission, so a resend replaces the route on the phone |
+| Latest take-off | 5 s steps up to 15 min with the safety rule (margins and 2 s tolerance); none when the route relies on no cut |
 | Directional jammers | hard beam edge, sidelobes required (`sidelobe_db`), friendly jammers only, k < 1 rejected, not used in `demo.json` |
 | Route smoothing | greedy string pulling, farthest point first, between the points of the SIPP route only (a better line through the middle of a straight run can be missed); holds kept |
 | Planner choices made in step 3 | SIPP and a 30 s / 5 s takeoff sweep, cuts must save more than 1 s, cells forbidden if any part may touch a zone, radar is a hard ban, margins 30 s / 60 s as constants in `plan.py` |

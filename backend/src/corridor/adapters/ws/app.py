@@ -9,6 +9,16 @@ A ``mission.created`` event is followed by a new snapshot for every client that 
 mission may bring jammers, threats and cuts into view that the client never received. A
 ``mission.updated`` one is followed by a new snapshot for every client: the mission may also
 leave a view (an operator whose jammer it no longer crosses).
+
+Route export over HTTP, for one mission (``mission_id``):
+
+GET  /api/export/inav       INAV mission (MW XML) of the mission's current plan
+GET  /api/export/ardupilot  ArduPilot mission (QGC WPL 110)
+GET  /api/export/briefing   the pilot's briefing, plain text
+POST /api/export/atak       send the route to the pilot's ATAK through OpenTAKServer
+
+Every export takes ``altitude_m`` (above launch) and refuses a ``preview`` plan: it relies
+on cuts nobody confirmed.
 """
 
 from __future__ import annotations
@@ -19,12 +29,12 @@ import contextlib
 import logging
 import math
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from corridor.adapters.tak.bridge import TakBridge
 from corridor.adapters.ws.audience import Audience, Viewer
@@ -42,6 +52,7 @@ from corridor.domain.events import (
 from corridor.domain.geo import LocalFrame, Position
 from corridor.domain.heatmap import heatmap_png as mission_heatmap_png
 from corridor.domain.heatmap import mission_heatmap
+from corridor.domain.model import Model
 from corridor.domain.rf.coverage import (
     ContourLevel,
     compute_js_heatmap,
@@ -57,12 +68,68 @@ from corridor.domain.zones import nominal_zones
 from corridor.engine.clock import SimClock
 from corridor.engine.engine import CommandRejected, Engine, MissionRuntime
 from corridor.engine.replan import Replanner
+from corridor.export.atak import TakTarget, deliver
+from corridor.export.firmware import ardupilot_waypoints, inav_mission
+from corridor.export.route import DEFAULT_ALTITUDE_M, FlightRoute, briefing, flight_route
 
 ReplannerFactory = Callable[[Scenario], Replanner]
 
 TICK_S = 0.5
 UNKNOWN_CALLSIGN = 4003
 log = logging.getLogger(__name__)
+
+Altitude = Annotated[float, Query(gt=0, le=1000, description="Metres above launch.")]
+MissionId = Annotated[str, Query(description="Mission whose current plan is exported.")]
+FileFormat = Literal["inav", "ardupilot", "briefing"]
+EXPORT_ERRORS: dict[int | str, dict[str, Any]] = {
+    404: {"description": "Unknown mission."},
+    409: {"description": "No plan yet, or the plan relies on unconfirmed cuts."},
+}
+ATAK_ERRORS: dict[int | str, dict[str, Any]] = {
+    **EXPORT_ERRORS,
+    502: {"description": "OpenTAKServer unreachable."},
+    503: {"description": "No OpenTAKServer configured (--tak-host)."},
+}
+
+
+class AtakSent(Model):
+    route_uid: str
+    pilot_callsign: str
+    chat_sent: bool = Field(description="False when the pilot's uid was not seen in time.")
+    revision: int
+
+
+def export_route(engine: Engine, mission_id: str, altitude_m: float) -> FlightRoute:
+    runtime = engine.missions.get(mission_id)
+    if runtime is None:
+        raise HTTPException(404, f"unknown mission {mission_id!r}")
+    plan = runtime.plan
+    if plan is None:
+        raise HTTPException(409, "no plan yet")
+    if plan.status == "preview":
+        raise HTTPException(409, "the plan relies on unconfirmed cuts")
+    return flight_route(
+        engine.scenario,
+        runtime.mission,
+        plan.optimised_route,
+        altitude_m,
+        cuts=list(engine.state.cuts.values()),
+        status=plan.status,
+        revision=plan.revision,
+        battery_used_pct=plan.metrics.optimised_battery_used_pct,
+    )
+
+
+def export_file(route: FlightRoute, fmt: FileFormat) -> Response:
+    stem = route.mission_id
+    if fmt == "inav":
+        content, name, media = inav_mission(route), f"{stem}.mission", "application/xml"
+    elif fmt == "ardupilot":
+        content, name, media = ardupilot_waypoints(route), f"{stem}.waypoints", "text/plain"
+    else:
+        content, name, media = "\n".join(briefing(route)) + "\n", f"{stem}.txt", "text/plain"
+    headers = {"Content-Disposition": f'attachment; filename="{name}"'}
+    return Response(content, media_type=media, headers=headers)
 
 
 async def _tick_forever(engine: Engine) -> None:
@@ -216,11 +283,12 @@ def create_app(
     clock_factor: float,
     cell_m: float,
     replanner: ReplannerFactory | None = None,
-    tak: tuple[str, int] | None = None,
+    tak: TakTarget | None = None,
 ) -> FastAPI:
     """Without ``replanner``, nothing is planned. The first plan is requested at startup.
-    With ``tak`` (OTS host and plain-TCP port), the engine is also published to ATAK
-    (``corridor.adapters.tak.bridge``)."""
+    With ``tak`` (OTS host, plain-TCP port, our callsign), the engine is also published to ATAK
+    (``corridor.adapters.tak.bridge``) and the ATAK export works; without it, that export
+    answers 503."""
     planner = replanner(scenario) if replanner else None
     engine = Engine(scenario, cell_m, SimClock(clock_factor), planner)
     audience = Audience(engine)
@@ -245,7 +313,7 @@ def create_app(
         ticker = asyncio.create_task(_tick_forever(engine))
         tasks = [ticker]
         if tak is not None:
-            bridge = TakBridge(engine, *tak)
+            bridge = TakBridge(engine, tak.host, tak.port)
             engine.subscribe(bridge.on_event)
             tasks.append(asyncio.create_task(bridge.run()))
         try:
@@ -466,5 +534,35 @@ def create_app(
             # The pump may already have died sending to a closed socket: nothing to report.
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await sender
+
+    @app.get("/api/export/{fmt}", responses=EXPORT_ERRORS)
+    def get_export(
+        fmt: FileFormat, mission_id: MissionId, altitude_m: Altitude = DEFAULT_ALTITUDE_M
+    ) -> Response:
+        return export_file(export_route(engine, mission_id, altitude_m), fmt)
+
+    @app.post("/api/export/atak", responses=ATAK_ERRORS)
+    async def post_atak(
+        mission_id: MissionId, altitude_m: Altitude = DEFAULT_ALTITUDE_M
+    ) -> AtakSent:
+        if tak is None:
+            raise HTTPException(503, "no OpenTAKServer: start corridor-server with --tak-host")
+        route = export_route(engine, mission_id, altitude_m)
+        try:
+            sent = await deliver(tak, route)
+        except OSError as exc:
+            raise HTTPException(502, f"OpenTAKServer {tak.host}:{tak.port}: {exc}") from exc
+        engine.notify(
+            route.pilot_callsign,
+            f"Route rev {route.revision} sent to your ATAK: take-off not before "
+            f"{route.label(route.takeoff_s, up=True)}.",
+        )
+        assert route.revision is not None
+        return AtakSent(
+            route_uid=sent.route_uid,
+            pilot_callsign=sent.pilot_callsign,
+            chat_sent=sent.chat_sent,
+            revision=route.revision,
+        )
 
     return app

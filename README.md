@@ -59,8 +59,13 @@ full behaviour: [`docs/feature.md`](docs/feature.md).
   take-off sweep, smoothing, route reasons), cut requests and confirmations, simulated flights
   with the safety rule and fallback routes, relays, heatmap, WebSocket server with its JSON
   Schema, web front end with the three role views.
-- TAK side: OTS stack, CoT client and demo shapes work on their own (sections below). The TAK
-  adapter that publishes the engine's zones, routes and notifications to ATAK is not wired yet.
+- TAK side: `corridor-server --tak-host` publishes the engine's zones, routes, drones and
+  notifications to ATAK through OTS ([docs/tak.md](docs/tak.md)); ATAK input does not become
+  commands yet.
+- Route export: the current plan as an ATAK route for the pilot only, an INAV mission or an
+  ArduPilot mission ([docs/export.md](docs/export.md)).
+- Scripted scenarios: timed events (jammer back on early, threats added or removed, a late
+  drone), e.g. `scenarios/hongkong_scripted.json`.
 - Simulated: the drone flight (no autopilot link), threats entered by hand, jammer schedules
   entered in Corridor.
 
@@ -124,5 +129,6 @@ frontend/   front end (React + Vite)
 - [`docs/architecture.md`](docs/architecture.md): engine, planner, jamming model, WebSocket protocol.
 - [`docs/demo_script.md`](docs/demo_script.md): the timed demo runs.
 - [`docs/tak.md`](docs/tak.md): OpenTAKServer, CoT client, connecting ATAK.
+- [`docs/export.md`](docs/export.md): route export to ATAK, INAV and ArduPilot.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): requirements, server options, checks, CI.
 - [`frontend/README.md`](frontend/README.md): front end stack, rules and layout.

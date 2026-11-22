@@ -11,6 +11,7 @@ import uvicorn
 from corridor.adapters.ws.app import create_app
 from corridor.domain.scenario import load_scenario
 from corridor.engine.replan import ProcessReplanner
+from corridor.export.atak import TakTarget
 
 
 def main() -> None:
@@ -26,9 +27,10 @@ def main() -> None:
         "--tak-host", help="OpenTAKServer host: publish routes, zones, drones and chat to ATAK"
     )
     parser.add_argument("--tak-port", type=int, default=8088, help="OTS plain-TCP CoT port")
+    parser.add_argument("--tak-callsign", default="CORRIDOR", help="our callsign on TAK")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     scenario = load_scenario(args.scenario)
-    tak = (args.tak_host, args.tak_port) if args.tak_host else None
+    tak = TakTarget(args.tak_host, args.tak_port, args.tak_callsign) if args.tak_host else None
     app = create_app(scenario, args.clock_factor, args.cell_m, ProcessReplanner, tak)
     uvicorn.run(app, host=args.host, port=args.port)

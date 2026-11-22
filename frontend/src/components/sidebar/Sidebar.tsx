@@ -4,6 +4,7 @@ import { Alert, Button, Group, ScrollArea, Stack } from '@mantine/core'
 import { missionOf } from '../../domain/view'
 import { useStore } from '../../store'
 import { PlusIcon, RadioIcon } from '../Icons'
+import { ExportCard } from '../ExportCard'
 import { CutForm } from './CutForm'
 import { ListView } from './ListView'
 import { MissionDetail } from './MissionDetail'
@@ -39,7 +40,14 @@ function Body() {
   const panel = useStore((s) => s.panel)
   const cutOpen = useStore((s) => s.cutDraft !== null)
   if (cutOpen) return <CutForm />
-  if (panel.view === 'mission') return <MissionDetail id={panel.id} />
+  if (panel.view === 'mission') {
+    return (
+      <>
+        <MissionDetail id={panel.id} />
+        <ExportCard />
+      </>
+    )
+  }
   if (panel.view === 'object') return <ObjectDetail kind={panel.kind} id={panel.id} />
   return <ListView />
 }
