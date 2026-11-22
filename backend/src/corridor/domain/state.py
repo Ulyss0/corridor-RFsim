@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -32,6 +33,21 @@ class Cut(Model):
     requested_for: str | None = Field(
         default=None, description="Mission the cut was asked for; None: from the scenario."
     )
+
+
+def merge_cuts(cuts: Iterable[Cut]) -> list[Cut]:
+    """Cuts of the same jammer that overlap or touch, merged into one: the jammer stays off
+    from the first start to the last end. The margins then apply to the merged cut only, so
+    a cut extended by another one leaves no gap between them. Each keeps the id and status of
+    its first cut."""
+    merged: list[Cut] = []
+    for cut in sorted(cuts, key=lambda c: (c.jammer, c.start_s)):
+        last = merged[-1] if merged else None
+        if last is not None and last.jammer == cut.jammer and cut.start_s <= last.end_s:
+            merged[-1] = last.model_copy(update={"end_s": max(last.end_s, cut.end_s)})
+        else:
+            merged.append(cut)
+    return merged
 
 
 class ClockState(Model):

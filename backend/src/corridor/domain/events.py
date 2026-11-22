@@ -73,10 +73,15 @@ class MissionStatusChanged(Model):
 
 
 class NotificationAction(Model):
-    """Command the recipient is expected to send back, shown as a button."""
+    """Command the recipient is expected to send back, shown as a button.
 
-    command: Literal["cut.confirm"]
-    cut: str
+    ``cut.confirm`` names a cut; ``route.decide`` names a mission whose route request awaits
+    an answer (accept or refuse).
+    """
+
+    command: Literal["cut.confirm", "route.decide"]
+    cut: str | None = None
+    mission: str | None = None
 
 
 class Notification(Model):
@@ -86,10 +91,12 @@ class Notification(Model):
     action: NotificationAction | None = None
 
 
-PlanStatus = Literal["preview", "approved", "fallback", "baseline"]
+PlanStatus = Literal["preview", "approved", "fallback", "baseline", "straight"]
 """preview: uses a scheduled cut not confirmed yet, not flyable.
 approved: uses confirmed cuts only. fallback: drone late, safe route from its position.
-baseline: no usable cut, the optimised route is the baseline."""
+baseline: no usable cut, the optimised route is the baseline.
+straight: the cut was refused (or not answered) and the pilot's plan B is "straight anyway":
+the drone flies the direct route through the jammer still on, control link at risk."""
 
 RouteAction = Literal["fly", "hover", "ground"]
 
@@ -131,6 +138,40 @@ class PlanMetrics(Model):
     saved_s: float = Field(description="Flight time saved, hover included, ground wait excluded.")
 
 
+ChoiceKind = Literal["fastest", "one_cut", "safe"]
+"""fastest: cuts as many friendly jammers as it needs. one_cut: the fastest cutting a single
+jammer. safe: no new cut, flyable as is. The front end calls safe the detour and the others
+direct routes."""
+
+
+class ProposedCut(Model):
+    """A cut a route needs: jammer off on [start, end], safety margins included."""
+
+    jammer: str
+    start_s: float
+    end_s: float
+
+
+class RouteChoice(Model):
+    """One route the pilot may pick. Only ``safe`` is flyable without the command's answer."""
+
+    kind: ChoiceKind
+    cuts: list[ProposedCut] = Field(description="New cuts the route needs; none for safe.")
+    route: list[RoutePoint]
+    flight_s: float = Field(description="Time in the air, hover included, ground wait excluded.")
+    battery_used_pct: float = Field(description="Of battery_max_s.")
+    saved_s: float = Field(description="Flight time saved against the safe choice.")
+    saved_pct: float = Field(description="Relative to the safe choice's flight time.")
+    radars: list[str] = Field(
+        default_factory=list,
+        description="Radars whose zone the route crosses (only when the mission lets it).",
+    )
+    worth_asking: bool = Field(
+        default=True,
+        description="False: shown for comparison, but saves too little to ask the command a cut.",
+    )
+
+
 class PlanUpdated(Model):
     """Planner output, after every change to the cuts while the mission is planned."""
 
@@ -144,6 +185,49 @@ class PlanUpdated(Model):
     profile: list[ProfilePoint] = Field(
         default_factory=list, description="Ground and drone height under the optimised route."
     )
+    choices: list[RouteChoice] = Field(
+        default_factory=list,
+        description="Routes the pilot may pick, fastest first, safe last. Empty once it flies.",
+    )
+
+
+OnTimeout = Literal["cross", "avoid"]
+"""The pilot's plan B if the command refuses the cuts or has not answered by the deadline:
+cross (fly the direct route anyway, straight through the jammers still on, control link at
+risk) or avoid (fly the detour, the ``safe`` choice). Only the command ever cuts a jammer."""
+
+RequestStatus = Literal["pending", "accepted", "refused"]
+
+
+class RouteRequest(Model):
+    """The route a pilot picked and, if it needs cuts, the command's answer."""
+
+    mission: str
+    kind: ChoiceKind
+    cuts: list[str] = Field(description="Ids of the cuts asked for; none for safe.")
+    saved_s: float = Field(description="Flight time the route saves against the safe one.")
+    saved_pct: float
+    deadline_s: float | None = Field(
+        description="Last moment for the command to answer; None when nothing is asked."
+    )
+    on_timeout: OnTimeout
+    status: RequestStatus
+    route: list[RoutePoint] = Field(
+        default_factory=list, description="The route picked: flown as is if refused and cross."
+    )
+    jammers: list[str] = Field(
+        default_factory=list, description="Friendly jammers the route goes through."
+    )
+    decided_by: str | None = Field(
+        default=None, description="Callsign that answered, or 'timeout' or 'launch'."
+    )
+
+
+class RouteRequested(Model):
+    """A route request was made or answered."""
+
+    type: Literal["route.request"] = "route.request"
+    request: RouteRequest
 
 
 class DroneState(Model):
@@ -178,6 +262,7 @@ Event = Annotated[
     | MissionStatusChanged
     | Notification
     | PlanUpdated
+    | RouteRequested
     | DroneState
     | JammerRestarted,
     Field(discriminator="type"),

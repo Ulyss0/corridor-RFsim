@@ -4,9 +4,15 @@ A flight follows a timed route ``delay_s`` behind its schedule (late launch, or 
 ``inject.delay``). While held, the drone stays where it is; held time in the air counts on the
 battery.
 
-Safety rule: the rest of the route, shifted by the delay, may only be in a friendly jammer zone
-inside a confirmed cut, with the planner's margins. When that no longer holds (drone late, cut
-cancelled), the engine asks for a fallback route from the drone position, using no cut.
+Safety rules, on the rest of the route shifted by the delay:
+
+- ``schedule_violation``: it may only be in a friendly jammer zone inside a confirmed cut, with
+  the planner's margins (broken when the drone is late or a cut is cancelled);
+- ``route_threat``: it may not enter an enemy jammer or radar zone, nor in 3D a cell out of the
+  pilot's reach (broken when the command adds a threat while the drone flies).
+
+When either no longer holds, the engine asks for a fallback route from the drone position,
+using no cut.
 
 In 3D (``LevelCells``) the zones are the planner's cells at the drone's flight level; during a
 climb or a descent, both levels count.
@@ -16,7 +22,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import numpy.typing as npt
@@ -24,7 +30,7 @@ import numpy.typing as npt
 from corridor.domain.events import RouteAction, RoutePoint
 from corridor.domain.geo import Grid, LocalFrame, Position
 from corridor.domain.planner.plan import ENTRY_MARGIN_S, EXIT_MARGIN_S
-from corridor.domain.state import Cut
+from corridor.domain.state import Cut, merge_cuts
 from corridor.domain.zones import ThreatShape
 
 CHECK_STEP_S = 2.0
@@ -45,6 +51,9 @@ class Flight:
     hold_until_s: float = 0.0
     hold_in_air: bool = False
     past_holds_air_s: float = 0.0
+    through_jammers: frozenset[str] = frozenset()
+    """Friendly jammers the pilot chose to fly straight through while on (``on_timeout``
+    cross after a refusal): the safety rule leaves them alone."""
 
     def route_time(self, now: float) -> float:
         """Where on its schedule the drone is at sim time ``now``."""
@@ -103,22 +112,21 @@ def takeoff_s(route: Sequence[RoutePoint]) -> float:
 
 @dataclass(frozen=True)
 class LevelCells:
-    """3D: the cells each friendly jammer forbids at each flight level, on the mission grid
-    (``corridor.domain.planner.layers.forbidden_cells``)."""
+    """3D: the cells each friendly jammer forbids at each flight level, on the mission grid,
+    and those forbidden whatever the cuts, by threat (``corridor.domain.planner.layers``)."""
 
     grid: Grid
     altitudes: tuple[float, ...]
     by_jammer: dict[str, npt.NDArray[np.bool_]]
     """``[level, row, col]``."""
+    blocked: dict[str, npt.NDArray[np.bool_]] = field(default_factory=dict)
+    """Enemy jammers, radars and ``LINK`` (out of the pilot's reach), ``[level, row, col]``."""
 
     def jammers(self, position: Position, levels: set[int]) -> list[str]:
-        cell = self.grid.cell_of(position)
-        if cell is None or not levels:
-            return []
-        col, row = cell
-        return [
-            j for j, cells in self.by_jammer.items() if any(cells[lv, row, col] for lv in levels)
-        ]
+        return _inside(self.grid, self.by_jammer, position, levels)
+
+    def threats(self, position: Position, levels: set[int]) -> list[str]:
+        return _inside(self.grid, self.blocked, position, levels)
 
     def levels_at(self, route: Sequence[RoutePoint], t: float) -> set[int]:
         """Levels of the route points around ``t``: one in level flight, two in a climb."""
@@ -147,10 +155,11 @@ def schedule_violation(
     """
     windows = [
         (c.jammer, c.start_s + ENTRY_MARGIN_S - TOLERANCE_S, c.end_s - EXIT_MARGIN_S + TOLERANCE_S)
-        for c in cuts
-        if c.status == "confirmed"
+        for c in merge_cuts(c for c in cuts if c.status == "confirmed")
     ]
-    friendly = [z for z in zones if z.kind == "friendly_jammer"]
+    friendly = [
+        z for z in zones if z.kind == "friendly_jammer" and z.threat not in flight.through_jammers
+    ]
     t, end = flight.route_time(now), flight.route[-1].t
     while t <= end:
         position, action = position_at(flight.route, t)
@@ -162,18 +171,54 @@ def schedule_violation(
                 x, y = frame.to_xy(position)
                 inside = [z.threat for z in friendly if z.contains(x, y)]
             for jammer in inside:
+                if jammer in flight.through_jammers:
+                    continue  # flown through on purpose (plan B straight anyway)
                 if not any(j == jammer and a <= actual <= b for j, a, b in windows):
                     return jammer
         t += CHECK_STEP_S
     return None
 
 
+def route_threat(
+    flight: Flight,
+    now: float,
+    frame: LocalFrame,
+    zones: Sequence[ThreatShape],
+    cells: LevelCells | None = None,
+) -> str | None:
+    """Enemy jammer or radar whose zone the rest of the route would enter; in 3D (``cells``)
+    also ``LINK`` where the pilot's signal is too weak at the drone's level."""
+    enemies = [z for z in zones if z.kind in ("enemy_jammer", "radar")]
+    t, end = flight.route_time(now), flight.route[-1].t
+    while t <= end:
+        position, action = position_at(flight.route, t)
+        if action != "ground":
+            if cells is not None:
+                inside = cells.threats(position, cells.levels_at(flight.route, t))
+            else:
+                x, y = frame.to_xy(position)
+                inside = [z.threat for z in enemies if z.contains(x, y)]
+            if inside:
+                return inside[0]
+        t += CHECK_STEP_S
+    return None
+
+
+def _inside(
+    grid: Grid, by_threat: dict[str, npt.NDArray[np.bool_]], position: Position, levels: set[int]
+) -> list[str]:
+    cell = grid.cell_of(position)
+    if cell is None or not levels:
+        return []
+    col, row = cell
+    return [t for t, cells in by_threat.items() if any(cells[lv, row, col] for lv in levels)]
+
+
 def cut_transitions(cuts: Sequence[Cut], after: float, until: float) -> list[tuple[Cut, str]]:
-    """Confirmed cuts that start or end in (after, until], in time order."""
+    """Confirmed cuts that start or end in (after, until], in time order. Cuts of a jammer
+    that touch count as one: the jammer is not restarted between them."""
     found: list[tuple[float, Cut, str]] = []
-    for cut in cuts:
-        if cut.status != "confirmed":
-            continue
+    for cut in merge_cuts(c for c in cuts if c.status == "confirmed"):
         if after < cut.start_s <= until:
             found.append((cut.start_s, cut, "start"))
         if after < cut.end_s <= until:

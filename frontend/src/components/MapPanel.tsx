@@ -1,13 +1,21 @@
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
 import { ActionIcon, Button, SegmentedControl, Tooltip } from '@mantine/core'
 import type { FeatureCollection } from 'geojson'
-import { send } from '../api/client'
-import { focusPoints, friendlyZoneState, positionAt } from '../domain/view'
+import {
+  choosing,
+  focusPoints,
+  friendlyZoneState,
+  highlightedChoice,
+  positionAt,
+  refusedKind,
+  straightAnyway,
+} from '../domain/view'
 import { useViewTime } from '../hooks/useSimNow'
 import { levelColor } from '../map/levels'
 import { COLORS, createMapView, ROUTE_COLORS, type DroneMark, type MapView } from '../map/mapView'
 import { useSelectedMission, useStore } from '../store'
 import { CrosshairIcon, DroneIcon, LayersIcon } from './Icons'
+import { MissionForm } from './sidebar/MissionForm'
 
 interface ProbeData {
   lat: number
@@ -32,19 +40,22 @@ export function MapPanel() {
   const cuts = useStore((s) => s.cuts)
   const missions = useStore((s) => s.missions)
   const selected = useStore((s) => s.selectedMission)
+  const focusedChoice = useStore((s) => s.focusedChoice)
+  const selectedChoice = useStore((s) => s.selectedChoice)
   const scrubbing = useStore((s) => s.viewTimeS !== null)
   const t = useViewTime()
   const list = useMemo(() => Object.values(missions), [missions])
   const callsign = useStore((s) => s.callsign)
-  // Missions this viewer may move, as a string: plan and drone events must not redraw the
-  // markers (a drag in progress would be lost), only a status or ownership change.
+  // Missions this viewer may change, as a string: plan and drone events must not redraw the
+  // markers, only a status or ownership change.
   const movableKey = list
     .filter((m) => m.status === 'planned')
     .map((m) => m.constraints.mission)
     .filter((id) => {
       const scenario = snapshot?.scenario
       const pilot = scenario?.missions.find((x) => x.id === id)?.pilot_callsign
-      return callsign === pilot || callsign === scenario?.command_callsign
+      // The pilot decides its mission: only it moves the points (the command answers cuts).
+      return callsign === pilot
     })
     .join(',')
   const movable = useMemo(() => (movableKey ? movableKey.split(',') : []), [movableKey])
@@ -69,17 +80,12 @@ export function MapPanel() {
     if (!container.current) return
     view.current = createMapView(container.current)
     view.current.onClick((pos) => useStore.getState().pickPoint(pos))
-    view.current.onMove(({ mission, point, pos }) => {
+    view.current.onMissionClick((mission) => {
       const state = useStore.getState()
-      if (mission === null) {
-        state.setRequestDraft({ [point]: pos })
-        return
-      }
       const m = state.snapshot?.scenario.missions.find((x) => x.id === mission)
       if (!m) return
-      // Dropped on the map: the mission moves at once, departure kept. The server replans it.
-      const points = { launch: m.launch, target: m.target, [point]: pos }
-      send({ type: 'mission.update', mission, ...points, departure_s: m.departure_s })
+      state.selectMission(mission)
+      state.openEdit(mission, m.launch, m.target)
     })
     return () => {
       view.current?.destroy()
@@ -118,12 +124,14 @@ export function MapPanel() {
     if (!snapshot) return
     const constraints = snapshot.missions.map((m) => m.constraints)
     const mission = constraints.find((c) => c.mission === selected) ?? null
+    // A pilot sees one circle per jammer, its own; the command, the reference footprints too.
+    const pilot = snapshot.viewer.role === 'pilot'
     view.current?.setScene({
       scenario: snapshot.scenario,
       grids: constraints.map((c) => c.grid),
       missionGrid: mission?.grid ?? null,
       missionZones: mission?.zones ?? [],
-      nominalZones: snapshot.nominal_zones,
+      nominalZones: pilot ? [] : snapshot.nominal_zones,
       movable,
       levelZones,
     })
@@ -178,6 +186,10 @@ export function MapPanel() {
     let timeoutId: number | undefined
     let abortCtrl: AbortController | null = null
 
+    view.current.onChoice(
+      (kind) => useStore.getState().focusChoice(kind),
+      (kind) => useStore.getState().selectChoice(kind),
+    )
     view.current.onHover((pos) => {
       window.clearTimeout(timeoutId)
       abortCtrl?.abort()
@@ -222,9 +234,20 @@ export function MapPanel() {
         baseline: m.plan?.baseline_route ?? null,
         optimised: m.plan?.optimised_route ?? null,
         selected: m.constraints.mission === selected,
+        // The pilot of the selected mission sees every route it may pick until it picks one.
+        choices:
+          m.constraints.mission === selected &&
+          choosing(m) &&
+          snapshot?.scenario.missions.find((x) => x.id === m.constraints.mission)?.pilot_callsign === callsign
+            ? (m.plan?.choices ?? [])
+            : [],
+        highlight:
+          highlightedChoice(m.plan?.choices ?? [], focusedChoice, selectedChoice ?? straightAnyway(m), refusedKind(m))
+            ?.kind ?? null,
+        refused: refusedKind(m),
       })),
     )
-  }, [list, selected])
+  }, [list, selected, focusedChoice, selectedChoice, callsign, snapshot])
 
   // Live: the server's simulated drones. Scrubbing: where each plan puts its drone at that instant.
   useEffect(() => {
@@ -267,6 +290,10 @@ export function MapPanel() {
   return (
     <div className="map-wrap">
       <div ref={container} className="map" />
+
+      <div className="map-form">
+        <MissionForm />
+      </div>
 
       {draft.picking && (
         <div className="map-pick-banner">
@@ -447,6 +474,7 @@ function TacticalLegend({ onClose }: { readonly onClose: () => void }) {
           {l.label}
         </div>
       ))}
+
     </div>
   )
 }
@@ -459,6 +487,7 @@ const LEGEND: { label: string; color: string; kind: 'area' | 'line' | 'dash' }[]
   { label: 'Radar', color: COLORS.radar, kind: 'area' },
   { label: 'Building (brighter = taller)', color: '#ced4da', kind: 'area' },
   { label: 'Zone to avoid (not enforced yet)', color: COLORS.avoid, kind: 'area' },
+  { label: "Out of the pilot's reach (3D, at the level)", color: COLORS.link, kind: 'area' },
   { label: 'Detour (all jammers on)', color: COLORS.baseline, kind: 'dash' },
   { label: 'Planned route', color: ROUTE_COLORS.approved, kind: 'line' },
   { label: 'Route awaiting confirmation', color: ROUTE_COLORS.preview, kind: 'line' },

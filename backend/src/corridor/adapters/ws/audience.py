@@ -28,6 +28,7 @@ from corridor.domain.events import (
     MissionUpdated,
     Notification,
     PlanUpdated,
+    RouteRequested,
     ThreatAdded,
     ThreatRemoved,
 )
@@ -115,6 +116,8 @@ class Audience:
                 return event.mission.id in scope.missions
             case ThreatAdded() | ThreatRemoved():
                 return not scope.missions.isdisjoint(event.missions)
+            case RouteRequested():
+                return event.request.mission in scope.missions
             case _:
                 assert_never(event)
 
@@ -140,8 +143,8 @@ class Audience:
         )
 
     def nominal_zones_for(self, viewer: Viewer, zones: list[Zone]) -> list[Zone]:
-        """A pilot works with the zones of its mission, not with nominal ones."""
-        if viewer.role == "pilot":
-            return []
+        """Reference footprints of the threats in view. A pilot gets them too, drawn under its
+        own zones: a jammer zone depends on where the pilot stands, and the two side by side
+        show how much its position changes it."""
         scope = self.scope(viewer)
         return [z for z in zones if z.threat in scope.jammers | scope.threats]

@@ -123,10 +123,9 @@ body { overflow: hidden; }
 .map-label-text { position: absolute; left: calc(100% + 4px); top: 50%; transform: translateY(-50%);
   font: 600 12px/1 system-ui, sans-serif; color: #fff; text-shadow: 0 0 3px #000, 0 0 3px #000;
   white-space: nowrap; pointer-events: none; }
-/* launch and target the viewer may drag: a bigger dot to grab, with a halo */
-.map-label-draggable { width: 16px; height: 16px; pointer-events: auto; cursor: grab;
+/* launch and target of a mission its pilot may change: a bigger dot to click, with a halo */
+.map-label-clickable { width: 16px; height: 16px; pointer-events: auto; cursor: pointer;
   box-shadow: 0 0 0 4px rgba(77, 171, 247, 0.35); }
-.map-label-draggable:active { cursor: grabbing; }
 /* Tactical drone marker with Google Maps arrow & radar pulse */
 .drone-marker {
   position: relative;
@@ -299,6 +298,27 @@ body { overflow: hidden; }
   font-size: 13px;
   pointer-events: none;
 }
+
+/* Route choice callouts on the map, after Google Maps: white for alternatives, the route colour
+   (--bubble, set inline) for the highlighted one, with a pointer towards its line. */
+.choice-bubble { --bubble: #fff; cursor: pointer; padding: 4px 8px;
+  border-radius: 8px; background: var(--bubble); color: #1b1f24;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45); font: 12px/1.2 system-ui, sans-serif;
+  text-align: center; white-space: nowrap; }
+.choice-bubble::after { content: ''; position: absolute; left: 50%; bottom: -6px; margin-left: -6px;
+  border: 6px solid transparent; border-bottom: 0; border-top-color: var(--bubble); }
+.choice-bubble.highlighted { color: #fff; z-index: 2; padding: 5px 10px; }
+.choice-bubble-time { font-weight: 800; font-size: 13px; }
+.choice-bubble-sub { font-size: 11px; opacity: 0.85; }
+
+/* The mission form floats on the map, next to the zoom buttons, and scrolls if taller. */
+.map-form { position: absolute; top: 12px; left: 56px; z-index: 15; width: 340px;
+  max-height: calc(100% - 24px); overflow-y: auto; padding: 12px; border-radius: 8px;
+  background: var(--mantine-color-dark-7); border: 1px solid var(--mantine-color-dark-4);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5); }
+.map-form:empty { display: none; }
+.map-legend-note { margin-top: 6px; max-width: 240px; font-size: 11px; line-height: 1.35;
+  opacity: 0.75; }
 
 /* Ground Team Field Terminal Screen */
 .ground-terminal-root {

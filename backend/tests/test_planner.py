@@ -5,19 +5,20 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from corridor.domain.events import RoutePoint
+from corridor.domain.events import ChoiceKind, RouteChoice, RoutePoint
 from corridor.domain.geo import Cell, Grid, LocalFrame, Position
 from corridor.domain.planner.astar import Step, earliest_path
 from corridor.domain.planner.masks import Mask, TimedMasks, disc_mask, shape_mask, timed_masks
 from corridor.domain.planner.plan import (
     ENTRY_MARGIN_S,
     EXIT_MARGIN_S,
+    MIN_OPTION_SAVING_S,
     MissionPlan,
     flight_s,
     plan_mission,
 )
 from corridor.domain.scenario import Scenario
-from corridor.domain.state import Cut, CutStatus
+from corridor.domain.state import Cut, CutStatus, merge_cuts
 from corridor.domain.zones import (
     Beam,
     Disc,
@@ -25,6 +26,8 @@ from corridor.domain.zones import (
     azimuth_to_angle,
     mission_constraints,
     mission_shapes,
+    nominal_radius,
+    starts_inside,
 )
 
 SQRT2 = math.sqrt(2)
@@ -228,8 +231,10 @@ def test_no_path_after_the_masks_end() -> None:
 def assert_route_is_clear(scenario: Scenario, cuts: list[Cut], route: list[RoutePoint]) -> None:
     """Timing at cruise speed, and clearance of the exact zones at every instant.
 
-    A friendly zone counts as off only inside its cut shrunk by the safety margins.
+    A friendly zone counts as off only inside its cut shrunk by the safety margins; cuts of a
+    jammer that touch count as one, as for the planner and the safety rule.
     """
+    cuts = merge_cuts(cuts)
     mission = scenario.missions[0]
     grid = grid_of(scenario)
     frame = LocalFrame(mission.launch)
@@ -393,3 +398,203 @@ def test_smoothing_shortens_the_route_and_drops_points(scenario: Scenario, cuts:
     assert len(smoothed) < len(grid_route)
     assert flight_s(smoothed) < flight_s(grid_route)
     assert smoothed[-1].t <= grid_route[-1].t
+
+
+def choice_of(result: MissionPlan, kind: ChoiceKind) -> RouteChoice:
+    choice = next((c for c in result.choices if c.kind == kind), None)
+    assert choice is not None, [c.kind for c in result.choices]
+    return choice
+
+
+def as_cuts(choice: RouteChoice) -> list[Cut]:
+    return [cut(p.jammer, p.start_s, p.end_s) for p in choice.cuts]
+
+
+def two_jammers(scenario: Scenario) -> Scenario:
+    """M1 with J5 east of J3, closer to a target moved further east: crossing either one alone
+    saves next to nothing, crossing both saves a lot."""
+    data = scenario.model_dump(mode="json")
+    j5 = dict(data["friendly_jammers"][0], id="J5", operator_callsign="EW-J5", eirp_w=1.0)
+    j5["pos"] = {"lat": 48.144966, "lon": 11.60}
+    data["friendly_jammers"].append(j5)
+    data["missions"][0]["target"]["lon"] = 11.65
+    return Scenario.model_validate(data)
+
+
+def test_detour_comes_with_a_one_cut_choice_through_j3(scenario: Scenario) -> None:
+    result = plan(scenario, [])
+    assert [c.kind for c in result.choices] == ["one_cut", "safe"]
+    safe, one_cut = choice_of(result, "safe"), choice_of(result, "one_cut")
+    assert safe.route == result.optimised_route
+    assert (safe.cuts, safe.saved_s) == ([], 0)
+    assert [p.jammer for p in one_cut.cuts] == ["J3"]
+    assert one_cut.saved_s >= MIN_OPTION_SAVING_S
+    assert one_cut.flight_s == pytest.approx(flight_s(one_cut.route))
+    assert one_cut.saved_s == pytest.approx(safe.flight_s - one_cut.flight_s)
+    assert one_cut.saved_pct == pytest.approx(100 * one_cut.saved_s / safe.flight_s)
+    battery_s = scenario.missions[0].battery_max_s
+    assert one_cut.battery_used_pct == pytest.approx(100 * one_cut.flight_s / battery_s)
+    assert scenario.missions[0].departure_s <= one_cut.cuts[0].start_s < one_cut.cuts[0].end_s
+    assert_route_is_clear(scenario, as_cuts(one_cut), one_cut.route)
+
+
+def test_scheduling_a_choice_gives_at_least_its_saving(scenario: Scenario) -> None:
+    one_cut = choice_of(plan(scenario, []), "one_cut")
+    result = plan(scenario, as_cuts(one_cut))
+    assert result.status == "approved"
+    assert result.metrics.saved_s >= one_cut.saved_s - 1e-6
+    assert [c.kind for c in result.choices] == ["safe"]  # J3 has its cut now
+
+
+def test_choice_window_is_tight(scenario: Scenario) -> None:
+    """Shortening the window by a minute on either side loses part of the saving."""
+    one_cut = choice_of(plan(scenario, []), "one_cut")
+    (p,) = one_cut.cuts
+    for start_s, end_s in ((p.start_s + 60, p.end_s), (p.start_s, p.end_s - 60)):
+        result = plan(scenario, [cut("J3", start_s, end_s)])
+        assert result.metrics.saved_s < one_cut.saved_s
+
+
+def test_fastest_cuts_every_jammer_it_needs(scenario: Scenario) -> None:
+    both = two_jammers(scenario)
+    result = plan(both, [])
+    kinds = [c.kind for c in result.choices]
+    assert (kinds[0], kinds[-1]) == ("fastest", "safe")
+    # One cut alone is no help: shown at most for comparison, never worth asking.
+    assert all(not c.worth_asking for c in result.choices if c.kind == "one_cut")
+    fastest = choice_of(result, "fastest")
+    assert sorted(p.jammer for p in fastest.cuts) == ["J3", "J5"]
+    assert fastest.saved_s >= MIN_OPTION_SAVING_S
+    assert_route_is_clear(both, as_cuts(fastest), fastest.route)
+
+
+def test_no_choice_through_a_jammer_off_the_route(two_missions: Scenario) -> None:
+    mission = two_missions.missions[0]  # M1: J4 sits by M2, far to the south
+    grid = mission_constraints(two_missions, mission, CELL_M).grid
+    result = plan_mission(two_missions, mission, grid, [])
+    assert result is not None
+    assert [[p.jammer for p in c.cuts] for c in result.choices] == [["J3"], []]
+
+
+def test_no_choice_through_a_jammer_whose_cut_awaits_an_answer(scenario: Scenario) -> None:
+    result = plan(scenario, [cut("J3", 900, 1260, status="scheduled")])
+    assert [c.kind for c in result.choices] == ["safe"]  # one request at a time
+
+
+def test_a_confirmed_cut_covering_the_need_asks_nothing_more(scenario: Scenario) -> None:
+    result = plan(scenario, [cut("J3", 900, 1500)])
+    assert result.status == "approved"
+    assert [c.kind for c in result.choices] == ["safe"]  # the approved route, nothing to ask
+
+
+def test_a_direct_route_may_extend_a_confirmed_cut(scenario: Scenario) -> None:
+    """Another mission got J3 cut too early for this one: ask only for what is missing, right
+    after the confirmed cut, which the route keeps using."""
+    early = cut("J3", 600, 800)
+    result = plan(scenario, [early])
+    one_cut = choice_of(result, "one_cut")
+    (extra,) = one_cut.cuts
+    assert extra.jammer == "J3"
+    assert extra.start_s >= early.end_s  # no overlap: the engine accepts it as a new cut
+    both = [early, cut("J3", extra.start_s, extra.end_s)]
+    assert_route_is_clear(scenario, both, one_cut.route)
+
+
+def test_cuts_that_touch_merge_into_one() -> None:
+    merged = merge_cuts([cut("J3", 600, 800), cut("J3", 800, 1000), cut("J3", 1200, 1300)])
+    assert [(c.start_s, c.end_s) for c in merged] == [(600, 1000), (1200, 1300)]
+
+
+def radar_on_the_way(scenario: Scenario, cross: bool) -> Scenario:
+    """M1 with R1 moved onto the straight line, between the pilot and J3, and shrunk so the
+    launch stays outside it; ``cross`` is the pilot's choice about radars."""
+    data = scenario.model_dump(mode="json")
+    r1 = data["enemy_threats"][0]
+    assert r1["id"] == "R1"
+    r1["pos"] = {"lat": 48.144966, "lon": 11.535}
+    r1["radius_m"] = 600
+    data["missions"][0]["cross_radars"] = cross
+    return Scenario.model_validate(data)
+
+
+def test_avoiding_radars_never_crosses_one(scenario: Scenario) -> None:
+    result = plan(radar_on_the_way(scenario, cross=False), [])
+    assert [c.radars for c in result.choices] == [[] for _ in result.choices]
+
+
+def test_a_pilot_may_fly_through_radars(scenario: Scenario) -> None:
+    avoid = plan(radar_on_the_way(scenario, cross=False), [])
+    through = radar_on_the_way(scenario, cross=True)
+    mission = through.missions[0]
+    result = plan_mission(through, mission, grid_of(through), [])
+    assert result is not None
+    one_cut = choice_of(result, "one_cut")
+    assert one_cut.radars == ["R1"]
+    assert one_cut.flight_s < choice_of(avoid, "one_cut").flight_s
+    # Through the radar, never through a jammer outside its cut.
+    jammers_only = through.model_copy(update={"enemy_threats": through.enemy_threats[1:]})
+    assert_route_is_clear(jammers_only, as_cuts(one_cut), one_cut.route)
+
+
+def test_a_direct_route_saving_little_is_shown_but_not_worth_asking(scenario: Scenario) -> None:
+    """Below the threshold the direct route stays in the list, for comparison, but it cannot
+    be asked for: here the threshold is raised above the saving of the demo's J3 cut."""
+    with mock.patch("corridor.domain.planner.plan.MIN_OPTION_SAVING_S", 10_000.0):
+        result = plan(scenario, [])
+    assert [c.kind for c in result.choices] == ["one_cut", "safe"]
+    one_cut = choice_of(result, "one_cut")
+    assert one_cut.saved_s > 0
+    assert not one_cut.worth_asking
+    assert choice_of(result, "safe").worth_asking
+
+
+def inside_j3(scenario: Scenario) -> Scenario:
+    """M1 with its pilot 1.3 km west of J3: inside J3's full zone (2.2 km)."""
+    data = scenario.model_dump(mode="json")
+    j3 = data["friendly_jammers"][0]
+    data["missions"][0]["launch"] = {"lat": j3["pos"]["lat"], "lon": j3["pos"]["lon"] - 0.0175}
+    return Scenario.model_validate(data)
+
+
+def test_a_pilot_inside_a_jammer_zone_gets_its_full_zone(scenario: Scenario) -> None:
+    inside = inside_j3(scenario)
+    mission = inside.missions[0]
+    assert starts_inside(inside, mission) == ["J3"]
+    assert starts_inside(scenario, scenario.missions[0]) == []
+    j3 = next(z for z in mission_shapes(inside, mission) if z.threat == "J3")
+    jammer = LocalFrame(mission.launch).to_xy(inside.friendly_jammers[0].pos)
+    assert (j3.disc.x, j3.disc.y) == pytest.approx(jammer)
+    assert j3.disc.radius_m == pytest.approx(
+        nominal_radius(inside, inside.friendly_jammers[0].eirp_w)
+    )
+    assert j3.contains(0, 0)  # the pilot stands in the jamming
+
+
+def test_starting_inside_a_jammer_zone_needs_its_cut(scenario: Scenario) -> None:
+    inside = inside_j3(scenario)
+    result = plan_mission(inside, inside.missions[0], grid_of(inside), [])
+    assert result is not None
+    assert result.status == "preview"  # not flyable before the command confirms
+    (choice,) = result.choices  # no detour
+    assert choice.kind == "one_cut"
+    assert [p.jammer for p in choice.cuts] == ["J3"]
+    assert choice.worth_asking
+    assert choice.cuts[0].start_s <= inside.missions[0].departure_s  # off from take-off
+
+    confirmed = plan_mission(inside, inside.missions[0], grid_of(inside), as_cuts(choice))
+    assert confirmed is not None
+    assert confirmed.status == "approved"
+    assert_route_is_clear(inside, as_cuts(choice), confirmed.optimised_route)
+
+
+def test_route_choices_in_3d(scenario: Scenario) -> None:
+    """On flight levels through the terrain, the direct route still asks for its J3 cut."""
+    terrain = scenario.terrain.model_copy(update={"mode": "3d"})
+    three_d = scenario.model_copy(update={"terrain": terrain})
+    result = plan_mission(three_d, three_d.missions[0], grid_of(three_d), [])
+    assert result is not None
+    one_cut = choice_of(result, "one_cut")
+    assert [p.jammer for p in one_cut.cuts] == ["J3"]
+    assert one_cut.saved_s >= MIN_OPTION_SAVING_S
+    levels = set(three_d.terrain.levels_m)
+    assert {p.alt_m for p in one_cut.route} - {0.0} <= levels  # every point at a flight level

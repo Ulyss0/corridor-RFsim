@@ -51,7 +51,7 @@ src/
   mission, threats.
 - 3D scenarios (`terrain.mode: "3d"`): a level selector in the map toolbar shows the selected
   mission's zones at one flight level (`GET /api/zones3d`) in place of its 2D discs (zones to
-  avoid stay 2D); the selected route is coloured by flight level; the mission detail shows the
+  avoid stay 2D), and in grey the cells out of the pilot's reach at that level (`LINK`); the selected route is coloured by flight level; the mission detail shows the
   altitude profile (ground and drone above sea level, from `plan.profile`).
 - Commands: `clock.set` (start / pause / speed), `cut.schedule` (EW cut form: jammer, mission
   among those the jammer concerns, start, length; prefilled from the jammer or mission shown;
@@ -64,11 +64,10 @@ src/
   "lat, lon", or picked again with the crosshair button. Departure: ASAP, in 5 or 15 min, or at a
   UTC time. A straight-line estimate (distance, time, battery) warns when the target is out of
   range. The new mission arrives with a fresh snapshot, gets selected, and the form closes.
-- "Change points" in the detail of a mission still on the ground (its pilot or the command) opens the same
-  form with its points and "Keep" as departure; it sends `mission.update`.
-- Map: the launch and target of a mission still on the ground (its pilot or the command) can be
-  dragged; dropping one sends `mission.update` at once, departure kept. The form's points can be
-  dragged too.
+- Map: a click on the route, launch or target of a mission still on the ground (its pilot only)
+  opens the same form, floating on the map, with its points and "Keep" as departure; it sends
+  `mission.update`. Points are never dragged: they are typed (GPS) or picked on the map with
+  the form's target button.
 - Notification feed with the confirm button from `notification.action`.
 - Timeline: cuts per jammer in view, one row per drone in view with its route segments (`ground` / `fly` / `hover`), orange cursor on
   live time. Drag the cursor to scrub: map and zones follow; "Back to live" resets.

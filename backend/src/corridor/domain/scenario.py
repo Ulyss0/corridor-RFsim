@@ -7,7 +7,7 @@ every direction. A jammer only matters to the mission if its ``bands`` contain t
 ``band``. Radars are discs (``radius_m``) and block every band. Enemy positions are estimates:
 ``position_error_m`` widens their zones (``corridor.domain.zones``). Friendly jammers are on
 except during cuts. ``cuts`` in the file are cuts already scheduled at start; they still need
-the operator's confirmation, like any other cut.
+the command's confirmation, like any other cut.
 
 Several missions share the same jammers, threats and cuts. Each mission has its own pilot
 position, so its own zones (``corridor.domain.zones.mission_constraints``). ``reference_link``
@@ -129,6 +129,13 @@ class Drone(Model):
     id: str
     band: str
     link_eirp_w: float = Field(gt=0, description="EIRP of the pilot's control link, watts.")
+    link_min_dbm: float = Field(
+        default=-100.0,
+        description=(
+            "Weakest control link signal the drone still uses, dBm (receiver sensitivity plus a"
+            " margin). In 3D, cells where the pilot's signal is weaker are forbidden."
+        ),
+    )
     cruise_speed_mps: float = Field(gt=0)
     battery_max_s: float = Field(gt=0, description="Flight time on a full battery.")
 
@@ -160,9 +167,20 @@ class Mission(Model):
     target: Position
     band: str
     link_eirp_w: float = Field(gt=0, description="EIRP of the pilot's control link, watts.")
+    link_min_dbm: float = Field(
+        default=-100.0,
+        description=(
+            "Weakest control link signal the drone still uses, dBm (receiver sensitivity plus a"
+            " margin). In 3D, cells where the pilot's signal is weaker are forbidden."
+        ),
+    )
     cruise_speed_mps: float = Field(gt=0)
     battery_max_s: float = Field(gt=0, description="Flight time on a full battery.")
     departure_s: float = Field(ge=0, description="Earliest departure.")
+    cross_radars: bool = Field(
+        default=False,
+        description="The pilot accepts being seen: routes may cross radar zones (never jammers).",
+    )
 
 
 class Terrain(Model):
@@ -313,6 +331,7 @@ def _drone_fields(drone: Drone) -> dict[str, Any]:
         "drone_id": drone.id,
         "band": drone.band,
         "link_eirp_w": drone.link_eirp_w,
+        "link_min_dbm": drone.link_min_dbm,
         "cruise_speed_mps": drone.cruise_speed_mps,
         "battery_max_s": drone.battery_max_s,
     }

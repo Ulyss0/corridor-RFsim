@@ -17,7 +17,7 @@ from pydantic import Field
 
 from corridor.adapters.ws.audience import Viewer
 from corridor.domain.commands import Command
-from corridor.domain.events import DroneState, Event, PlanUpdated
+from corridor.domain.events import DroneState, Event, PlanUpdated, RouteRequest
 from corridor.domain.model import Model
 from corridor.domain.scenario import Scenario
 from corridor.domain.state import ClockState, Cut, MissionStatus
@@ -31,6 +31,9 @@ class MissionView(Model):
     status: MissionStatus
     plan: PlanUpdated | None = Field(description="Latest plan; None until the first one.")
     drone: DroneState | None = Field(description="Latest drone state; None before take-off.")
+    request: RouteRequest | None = Field(
+        default=None, description="Route the pilot picked and its answer; None before a pick."
+    )
 
 
 class Snapshot(Model):

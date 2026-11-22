@@ -5,7 +5,8 @@ import type { GeoJSONSource, ImageSource, Map as MlMap, StyleSpecification } fro
 import type { Feature, FeatureCollection } from 'geojson'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
-import type { Grid, PlanUpdated, Position, RoutePoint, Scenario, Zone } from '../api/protocol'
+import type { ChoiceKind, Grid, PlanUpdated, Position, RouteChoice, RoutePoint, Scenario, Zone } from '../api/protocol'
+import { durationLabel, pointAlong } from '../domain/view'
 import { boundsOf, gridBounds, type ZoneState } from '../domain/view'
 import { levelColor, levelIndex } from './levels'
 
@@ -42,11 +43,61 @@ export const COLORS = {
   enemy: '#9c36b5',
   radar: '#fd7e14',
   avoid: '#fab005',
+  /** 3D: where the pilot's signal is too weak. */
+  link: '#868e96',
   baseline: '#adb5bd',
   optimised: '#22b8cf',
   preview: '#f08c00',
   fallback: '#fa5252',
   drone: '#ffffff',
+}
+
+/** Colour of each route choice, on the map and in the mission card. */
+export const CHOICE_COLORS: Record<ChoiceKind, string> = {
+  fastest: '#be4bdb',
+  one_cut: '#f08c00',
+  safe: '#22b8cf',
+}
+
+/** Route choices that are not highlighted, as Google Maps draws alternatives. */
+const CHOICE_ALT = '#8a96a3'
+
+/** Where each kind puts its bubble along its route, so bubbles of overlapping routes do not
+ * cover each other. */
+const BUBBLE_AT: Record<ChoiceKind, number> = { fastest: 0.3, one_cut: 0.5, safe: 0.62 }
+
+/** Callout on a route choice: flight time, and what it saves against the detour. */
+function bubble(
+  map: MlMap,
+  c: RouteChoice,
+  highlighted: boolean,
+  refused: boolean,
+  hover: (kind: ChoiceKind | null) => void,
+  click: (kind: ChoiceKind) => void,
+): maplibregl.Marker {
+  const el = document.createElement('div')
+  el.className = highlighted ? 'choice-bubble highlighted' : 'choice-bubble'
+  if (highlighted) el.style.setProperty('--bubble', CHOICE_COLORS[c.kind])
+  const time = document.createElement('div')
+  time.className = 'choice-bubble-time'
+  time.textContent = durationLabel(c.flight_s)
+  const sub = document.createElement('div')
+  sub.className = 'choice-bubble-sub'
+  const n = c.cuts.length
+  const cuts = n === 0 ? 'no cut' : n + (n > 1 ? ' cuts' : ' cut')
+  const parts = c.saved_s > 0 ? ['−' + durationLabel(c.saved_s), cuts] : [cuts]
+  if (c.radars.length > 0) parts.push('through ' + c.radars.join(', '))
+  if (refused) parts.unshift('refused')
+  sub.textContent = parts.join(' · ')
+  el.append(time, sub)
+  el.addEventListener('mouseenter', () => hover(c.kind))
+  el.addEventListener('mouseleave', () => hover(null))
+  el.addEventListener('click', (e) => {
+    e.stopPropagation()
+    click(c.kind)
+  })
+  const at = pointAlong(c.route, BUBBLE_AT[c.kind])
+  return new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -6] }).setLngLat([at.lon, at.lat]).addTo(map)
 }
 
 /** Colour of the planned route for each plan status. */
@@ -55,6 +106,7 @@ export const ROUTE_COLORS: Record<PlanUpdated['status'], string> = {
   approved: COLORS.optimised,
   preview: COLORS.preview,
   fallback: COLORS.fallback,
+  straight: COLORS.preview,
 }
 
 type FC = FeatureCollection
@@ -89,15 +141,15 @@ export interface Scene {
   /** 3D: the selected mission's zones at the chosen flight level (polygons with ``threat`` and
    * ``kind``). They replace its 2D zones, except the zones to avoid, which stay 2D. */
   levelZones?: FeatureCollection | null
-  /** Missions whose launch and target can be dragged (on the ground, this viewer may change). */
+  /** Missions whose route, launch and target open the mission form on a click (on the
+   * ground, this viewer is their pilot). */
   movable: string[]
 }
 
-/** A launch or target dropped somewhere else: of a mission, or of the form (`mission` null). */
-export interface PointMove {
+/** Which point a marker stands for: of a mission, or of the form (`mission` null). */
+export interface MissionPoint {
   mission: string | null
   point: 'launch' | 'target'
-  pos: Position
 }
 
 export interface MissionRoutes {
@@ -106,6 +158,12 @@ export interface MissionRoutes {
   optimised: RoutePoint[] | null
   /** The selected mission shows its detour too, and stands out. */
   selected: boolean
+  /** Routes its pilot may still pick; drawn instead of the planned route while non-empty, the
+   * highlighted one in colour, the others in grey, each with a bubble (time, saving). */
+  choices?: RouteChoice[]
+  highlight?: ChoiceKind | null
+  /** Choice the command refused: grey, its bubble says so. */
+  refused?: ChoiceKind | null
 }
 
 export interface DroneMark {
@@ -132,9 +190,12 @@ export interface MapView {
   /** Points of the mission request being filled in. */
   setRequest(points: RequestPoints): void
   onClick(handler: (pos: Position) => void): void
-  onMove(handler: (move: PointMove) => void): void
+  /** Click on the route, launch or target of a mission this viewer may change. */
+  onMissionClick(handler: (mission: string) => void): void
   setZoneStates(states: Record<string, ZoneState>): void
   setRoutes(routes: MissionRoutes[]): void
+  /** Pointer on (or off, null) a route choice bubble, and a click on one. */
+  onChoice(hover: (kind: ChoiceKind | null) => void, click: (kind: ChoiceKind) => void): void
   setDrones(drones: DroneMark[]): void
   setRfCoverage(coverage: FeatureCollection | null): void
   setRfHeatmap(heatmap: RfHeatmap | null): void
@@ -176,19 +237,27 @@ export function createMapView(container: HTMLElement): MapView {
   const drones = new Map<string, maplibregl.Marker>()
   const requestMarkers: maplibregl.Marker[] = []
   let clickHandler: ((pos: Position) => void) | null = null
-  let moveHandler: ((move: PointMove) => void) | null = null
-  /** Label marker, draggable when `move` says what it is. */
-  const point = (pos: Position, text: string, color: string, move?: Omit<PointMove, 'pos'>) => {
-    const marker = label(map, pos, text, color, move !== undefined)
-    if (move) {
-      marker.on('dragend', () => {
-        const { lat, lng } = marker.getLngLat()
-        moveHandler?.({ ...move, pos: { lat, lon: lng } })
+  let missionClickHandler: ((mission: string) => void) | null = null
+  let movableIds = new Set<string>()
+  /** Label marker; clickable when `move` names a mission point. */
+  const point = (pos: Position, text: string, color: string, move?: MissionPoint) => {
+    // Never draggable: a point moved by accident moves the mission. A click on a mission's
+    // point opens its form, which sets points from GPS coordinates or a pick on the map.
+    const marker = label(map, pos, text, color)
+    const mission = move?.mission ?? null
+    if (mission !== null) {
+      marker.getElement().classList.add('map-label-clickable')
+      marker.getElement().addEventListener('click', (e) => {
+        e.stopPropagation()
+        missionClickHandler?.(mission)
       })
     }
     return marker
   }
   map.on('click', (e) => clickHandler?.({ lat: e.lngLat.lat, lon: e.lngLat.lng }))
+  const choiceBubbles: maplibregl.Marker[] = []
+  let choiceHover: (kind: ChoiceKind | null) => void = () => {}
+  let choiceClick: (kind: ChoiceKind) => void = () => {}
 
   const setData = (source: string, data: FC) => {
     pending[source] = data
@@ -376,6 +445,32 @@ export function createMapView(container: HTMLElement): MapView {
       filter: ['==', ['get', 'kind'], 'baseline'],
       paint: { 'line-color': COLORS.baseline, 'line-width': 3, 'line-dasharray': [2, 2] },
     })
+    // Google Maps style: alternatives in grey underneath, the highlighted route in colour on
+    // top with a dark casing.
+    map.addLayer({
+      id: 'route-choices-alt',
+      type: 'line',
+      source: 'routes',
+      filter: ['all', ['==', ['get', 'kind'], 'choice'], ['!', ['get', 'highlighted']]],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': CHOICE_ALT, 'line-width': 5, 'line-opacity': 0.9 },
+    })
+    map.addLayer({
+      id: 'route-choices-casing',
+      type: 'line',
+      source: 'routes',
+      filter: ['all', ['==', ['get', 'kind'], 'choice'], ['get', 'highlighted']],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#0b1d2a', 'line-width': 10 },
+    })
+    map.addLayer({
+      id: 'route-choices',
+      type: 'line',
+      source: 'routes',
+      filter: ['all', ['==', ['get', 'kind'], 'choice'], ['get', 'highlighted']],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': ['get', 'color'], 'line-width': 6 },
+    })
     map.addLayer({
       id: 'route-optimised',
       type: 'line',
@@ -387,6 +482,20 @@ export function createMapView(container: HTMLElement): MapView {
         'line-opacity': ['case', ['get', 'selected'], 1, 0.6],
       },
     })
+    // A click on a route of a mission this viewer may change opens its form.
+    for (const layer of ['route-optimised', 'route-choices', 'route-choices-alt']) {
+      map.on('click', layer, (e) => {
+        const mission = e.features?.[0]?.properties?.mission
+        if (typeof mission === 'string' && movableIds.has(mission)) missionClickHandler?.(mission)
+      })
+      map.on('mouseenter', layer, (e) => {
+        const mission = e.features?.[0]?.properties?.mission
+        if (typeof mission === 'string' && movableIds.has(mission)) map.getCanvas().style.cursor = 'pointer'
+      })
+      map.on('mouseleave', layer, () => {
+        map.getCanvas().style.cursor = ''
+      })
+    }
     loaded = true
     applyHeatmap()
     if (is3dMode) {
@@ -424,7 +533,7 @@ export function createMapView(container: HTMLElement): MapView {
     const flat = level ? scene.missionZones.filter((z) => z.kind === 'avoid') : scene.missionZones
     const levelFeatures: Feature[] = (level?.features ?? []).map((f) => {
       const threat = String(f.properties?.threat ?? '')
-      const kind = f.properties?.kind as Zone['kind']
+      const kind = f.properties?.kind as LevelKind
       return { ...f, properties: { ...f.properties, ...kindStyle(kind, states[threat] ?? 'on') } }
     })
     setData('zones', { type: 'FeatureCollection', features: [...zoneFeatures(flat, outer), ...levelFeatures] })
@@ -457,6 +566,7 @@ export function createMapView(container: HTMLElement): MapView {
       }
 
       markers.splice(0).forEach((m) => m.remove())
+      movableIds = new Set(scene.movable)
       for (const m of scenario.missions) {
         const movable = scene.movable.includes(m.id)
         markers.push(point(m.launch, `${m.pilot_callsign} (${m.id})`, '#4dabf7', movable ? { mission: m.id, point: 'launch' } : undefined))
@@ -474,8 +584,8 @@ export function createMapView(container: HTMLElement): MapView {
     onClick(handler) {
       clickHandler = handler
     },
-    onMove(handler) {
-      moveHandler = handler
+    onMissionClick(handler) {
+      missionClickHandler = handler
     },
     setZoneStates(s) {
       states = s
@@ -504,10 +614,32 @@ export function createMapView(container: HTMLElement): MapView {
         }
         return legs
       }
-      const features = routes.flatMap((r) => [
-        ...(r.selected ? line('baseline', r.baseline, r.mission, true) : []),
-        ...line('optimised', r.optimised, r.mission, r.selected),
-      ])
+      const choice = (r: MissionRoutes): Feature[] =>
+        (r.choices ?? [])
+          .filter((c) => c.route.length > 1)
+          .map((c) => ({
+            type: 'Feature',
+            properties: { kind: 'choice', mission: r.mission, color: CHOICE_COLORS[c.kind], highlighted: c.kind === r.highlight },
+            geometry: { type: 'LineString', coordinates: c.route.map((p) => [p.lon, p.lat]) },
+          }))
+      choiceBubbles.splice(0).forEach((m) => m.remove())
+      for (const r of routes) {
+        for (const c of r.choices ?? []) {
+          if (c.route.length < 2) continue
+          choiceBubbles.push(
+            bubble(map, c, c.kind === r.highlight, c.kind === r.refused, (k) => choiceHover(k), (k) => choiceClick(k)),
+          )
+        }
+      }
+      // While the pilot picks, its route choices; otherwise the planned route (per level in 3D).
+      const features = routes.flatMap((r) =>
+        r.choices && r.choices.length > 0
+          ? choice(r)
+          : [
+              ...(r.selected ? line('baseline', r.baseline, r.mission, true) : []),
+              ...line('optimised', r.optimised, r.mission, r.selected),
+            ],
+      )
       setData('routes', { type: 'FeatureCollection', features })
     },
     setDrones(next) {
@@ -605,6 +737,10 @@ export function createMapView(container: HTMLElement): MapView {
         }
       }
     },
+    onChoice(hover, click) {
+      choiceHover = hover
+      choiceClick = click
+    },
     destroy() {
       map.remove()
     },
@@ -615,7 +751,11 @@ function zoneStyle(z: Zone, state: ZoneState): { color: string; opacity: number 
   return kindStyle(z.kind, state)
 }
 
-function kindStyle(kind: Zone['kind'], state: ZoneState): { color: string; opacity: number } {
+/** Kind of a 3D outline: a zone kind, or ``link`` where the pilot's signal is too weak. */
+type LevelKind = Zone['kind'] | 'link'
+
+function kindStyle(kind: LevelKind, state: ZoneState): { color: string; opacity: number } {
+  if (kind === 'link') return { color: COLORS.link, opacity: 0.3 }
   if (kind === 'radar') return { color: COLORS.radar, opacity: 0.2 }
   if (kind === 'enemy_jammer') return { color: COLORS.enemy, opacity: 0.2 }
   if (kind === 'avoid') return { color: COLORS.avoid, opacity: 0.12 }
@@ -627,15 +767,14 @@ function kindStyle(kind: Zone['kind'], state: ZoneState): { color: string; opaci
 /** HTML marker with a dot and a text label (no glyph server needed, works offline).
  *
  * The marker element is the dot alone, anchored on its centre, so the position is exactly under
- * it and a drag grabs the point itself. The text hangs to the right and never takes the mouse. */
-function label(map: MlMap, pos: Position, text: string, color: string, draggable = false): maplibregl.Marker {
+ * it and a click lands on the point itself. The text hangs to the right and never takes the mouse. */
+function label(map: MlMap, pos: Position, text: string, color: string): maplibregl.Marker {
   const el = document.createElement('div')
-  el.className = draggable ? 'map-label-dot map-label-draggable' : 'map-label-dot'
+  el.className = 'map-label-dot'
   el.style.background = color
-  if (draggable) el.title = 'Drag to move'
   const span = document.createElement('span')
   span.className = 'map-label-text'
   span.textContent = text
   el.append(span)
-  return new maplibregl.Marker({ element: el, anchor: 'center', draggable }).setLngLat([pos.lon, pos.lat]).addTo(map)
+  return new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([pos.lon, pos.lat]).addTo(map)
 }

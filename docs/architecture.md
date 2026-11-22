@@ -140,7 +140,7 @@ Two kinds of data, kept apart:
   `beamwidth_deg` up to 180, `sidelobe_db` up to 0). Its `eirp_w` is then the main beam EIRP.
   Without `antenna` it is omnidirectional. Enemy jammers are omnidirectional for now.
 - Friendly jammers are on except during cuts. `cuts` in the file are cuts already scheduled at
-  start: they begin as `scheduled` and still need the operator's confirmation. Other cuts are
+  start: they begin as `scheduled` and still need the command's confirmation. Other cuts are
   created live with `cut.schedule`.
 - Band filter: a jammer (friendly or enemy) only blocks a mission if its `bands` contain the
   mission `band`. A radar blocks every band.
@@ -415,6 +415,11 @@ classDiagram
     MissionRuntime *-- "0..1" DroneState : drone
     PlanUpdated *-- "1" PlanMetrics : metrics
     PlanUpdated *-- "*" RoutePoint : baseline_route, optimised_route
+    PlanUpdated *-- "*" RouteChoice : choices
+    RouteChoice *-- "*" ProposedCut : cuts
+    ProposedCut ..> FriendlyJammer : jammer (id)
+    MissionRuntime *-- "0..1" RouteRequest : request
+    RouteRequest ..> Cut : cuts (ids)
     Flight *-- "*" RoutePoint : route
 ```
 
@@ -440,7 +445,7 @@ Commands and events belong to the domain. Each adapter translates its own wire f
 - **Shared vocabulary, not 1 to 1.** The front receives everything; TAK will listen to a subset
   in another shape. Demo controls (`clock.set`) only exist on the front.
 - **Every command carries an `actor`**, the sender's callsign. The engine, not the adapter,
-  checks it: only the jammer operator may confirm a cut, whatever the channel. The web front
+  checks it: only the command may confirm a cut, whatever the channel. The web front
   signs in with a callsign (`?callsign=`), which sets its role and what it receives, and may
   only act as that callsign; there is no authentication in the proof of concept.
 - **Accepted shortcut on the WebSocket side.** Domain events are pydantic models; the WebSocket
@@ -452,11 +457,13 @@ Rules enforced today:
 | Command | Rejected when |
 |---|---|
 | `cut.schedule` | unknown friendly jammer or mission, start in the past, overlap with another cut of the same jammer |
-| `cut.confirm` | unknown cut, already confirmed, actor is not the jammer operator |
+| `cut.confirm` | unknown cut, already confirmed, actor is not the command |
+| `route.choose` | unknown mission, not `planned`, no plan yet, actor is not its pilot (the command answers cuts, it does not pick routes), no such choice in the plan, deadline already past, a cut it needs overlaps another cut |
+| `route.decide` | unknown mission, actor is not the command, no pending request |
 | `cut.cancel` | unknown cut |
 | `mission.request` | actor is not a pilot |
-| `mission.update` | unknown mission, mission not in `planned`, actor is neither its pilot nor the command |
-| `mission.launch` | unknown mission, mission not in `planned`, actor is neither its pilot nor the command |
+| `mission.update` | unknown mission, mission not in `planned`, actor is not its pilot |
+| `mission.launch` | unknown mission, mission not in `planned`, actor is not its pilot (the command only answers cut requests) |
 | `inject.delay` | unknown mission, no drone in flight |
 | `threat.add` | actor is not the command; fields not matching the kind (pydantic); a zone the J/S model cannot draw (jammer on a pilot) |
 | `threat.remove` | actor is not the command, unknown threat |
@@ -504,9 +511,14 @@ Rules enforced today:
   (`inject.delay`) it stays where it is; held time in the air counts on the battery.
 - Safety rule, every tick: the rest of the route, shifted by the delay, may only be in a friendly
   jammer zone inside a confirmed cut, with the planner margins (2 s of tolerance for sampling).
-  Otherwise (drone late, cut cancelled) the engine requests a `fallback` plan from the drone
-  position (`plan_fallback`: no cut, take off now) and switches the flight to it. The pilot gets a
-  notification at each step. No safe route: the drone keeps its route and the pilot is told.
+  It may not enter an enemy jammer or radar zone either, nor in 3D a cell out of the pilot's reach
+  (`route_threat`): a threat the command adds while the drone flies. Otherwise (drone late, cut
+  cancelled, new threat on the route) the engine requests a `fallback` plan from the drone
+  position (`plan_fallback`: no cut, take off now) and switches the flight to it. A drone the new
+  zone already covers first flies straight to the nearest cell free at its level
+  (`escape_cell`), then the search starts there. A threat away from the rest of the route
+  changes nothing in flight. The pilot gets a notification at each step. No safe route: the
+  drone keeps its route and the pilot is told.
 
 ## Planner
 
@@ -522,7 +534,9 @@ say which cuts are taken into account. One function covers every case:
 **3D planning** (`terrain.mode: "3d"`, `domain/planner/layers.py`). One layer of time masks per
 flight level. A cell is forbidden at a level by a jammer's 3D zone widened by one cell (zones are
 evaluated at cell centres), an enemy jammer's zone widened further by its 2D position margin
-e * k / |k - 1| in whole cells, or a radar's 2D disc (every level). Zones to avoid stay out;
+e * k / |k - 1| in whole cells, a radar's 2D disc (every level), or the pilot's minimum signal:
+where the control link from the pilot falls below `link_min_dbm` (per drone, default -100 dBm,
+open decision 41), widened by one cell (`link_cells`). Zones to avoid stay out;
 friendly zones are off during their shrunk cut windows. SIPP then also moves one level up or
 down in place, at 3 m/s (`CLIMB_MPS`, open decision 39; climbing costs its flight time). The
 search starts at the lowest level (the drone's level for a fallback) and ends over the target
@@ -536,8 +550,12 @@ buildings): pilot on the Tsim Sha Tsui waterfront, target in Quarry Bay, friendl
 on the harbour crossing, enemy jammer (1 W) on Victoria Peak. Detour 432 s climbing to 250 m
 (up to 560 m above sea level over the towers), 308 s through the harbour cut: 29 % saved, where
 2D gives 7 %. A pilot standing among the towers (inland Tsim Sha Tsui) gets no route at all: the
-city shadows a 2 m antenna. Not yet: the pilot's minimum signal, radars masked by terrain,
-a vertical speed or battery cost of its own for climbing.
+city shadows a 2 m antenna. With the pilot's minimum signal at -100 dBm, Victoria Peak puts
+40 % (250 m) to 67 % (30 m) of the Hong Kong grid out of the pilot's reach, about 0.2 % of
+Munich's at 30 m. Neither demo route changes: near a jammer, a weak link already fails the J/S
+test. The threshold matters where there is no jammer: a valley or a street behind a tower
+block. Not yet: radars masked by terrain, a vertical speed or battery cost of its own for
+climbing.
 
 **Search: SIPP (safe interval path planning)** (`domain/planner/astar.py`).
 - Grid of 100 m cells, one altitude layer, 8 neighbours at cruise speed (a diagonal takes
@@ -624,12 +642,14 @@ flat ground the top level gives the 2D disc. On the Munich demo, J3 denies at 30
 grid with a 2 m pilot antenna and 13 % with a 10 m mast, against the 2D disc (9 %) at 120 m and
 above: flying low costs the pilot link. About 0.2 to 0.7 s per mission, then cached (a cut
 recomputes nothing; a new threat only its own field). Enemy position margins and masks over
-time come with the 3D masks; `pilot_signal` is the input of the pilot minimum signal.
+time come with the 3D masks. `link_lost`: where `pilot_signal` is below the mission's
+`link_min_dbm`, jammer or not.
 
 **3D zones on the map** (`adapters/ws/outlines.py`, `GET /api/zones3d?mission_id=`). The cells
 the planner forbids at each level, per threat (`planner/layers.py:cells_by_threat`, the same
 widening and enemy margins as the masks), traced as polygons: GeoJSON features with `threat`,
-`kind`, `level` (index) and `level_m`. Empty in 2D. The front end fetches them again with each
+`kind`, `level` (index) and `level_m`, plus threat `LINK` (kind `link`) for the cells out of
+the pilot's reach. Empty in 2D. The front end fetches them again with each
 snapshot (a threat added or removed comes with one) and shows one level at a time; a friendly
 jammer's outline takes the colour of its cut state like the 2D disc. A radar is the same 2D
 shape at every level.
@@ -760,23 +780,50 @@ Server to client:
   elevation file), `alt_m` and `amsl_m` (`null` in 2D). For the altitude profile and a 3D
   view of the route (a line through the `profile` points at `amsl_m`).
 - `status`: `preview` (uses a cut not confirmed yet, not flyable), `approved` (confirmed cuts
-  only), `fallback` (drone late, safe route from its position), `baseline` (no usable cut).
+  only), `fallback` (drone late, safe route from its position), `baseline` (no usable cut),
+  `straight` (cut refused, plan B: the direct route through the jammer still on).
 - Battery figures are consumption in % of `battery_max_s`. `saved_pct` is relative to the
   baseline consumption: (85 - 52) / 85 = 38.8 %, not the 33 point difference. `saved_s` counts
   flight time, hover included, ground wait excluded.
+- `choices`: the routes the pilot may pick, at most three, in this order:
+  `fastest` (cuts every friendly jammer it needs), `one_cut` (the fastest cutting a single
+  jammer), `safe` (the flyable route as is, no new cut). Each gives `cuts` (jammer, start, end;
+  the window already includes the entry and exit margins, so scheduling it as is gives
+  `route`), `route`, `flight_s`, `battery_used_pct`, and `saved_s` / `saved_pct` against
+  `safe`. A choice needing cuts appears only if it saves 30 s against the one after it, so
+  `fastest` is dropped when it does no better than `one_cut`. Jammers with a cut not over by
+  departure are left alone. Computed by `corridor.domain.planner.plan.route_choices`: the
+  windows span the time the drone would spend in each zone if those jammers were off for the
+  whole flight, then the route is searched again with those windows only.
+
+**Route request.** The pilot picks a choice with `route.choose`. `safe` stands at once
+(`status: accepted`). A choice needing cuts schedules them (`requested_for` the mission) and
+asks the command with a `route.decide` notification; the request is `pending` until a deadline
+2 minutes before the take-off of that route or its first cut, whichever comes first. The
+command answers with `route.decide` (accept confirms the cuts and orders the jammer operators,
+refuse cancels them). Only the command ever cuts: unanswered at the deadline, the request is
+refused (`decided_by: "timeout"`), and launching while still `pending` refuses it
+(`decided_by: "launch"`). After a refusal the pilot's plan B, `on_timeout`, decides the flight:
+`avoid` flies the `safe` route (the detour), `cross` flies the route picked anyway, straight
+through the jammers still on (`RouteRequest.route`, `jammers`): the control link may be lost
+there, and the safety rule leaves those jammers alone (`Flight.through_jammers`). At launch the plan
+becomes that route, with status `straight`, so every view shows what is flown. Without a
+detour (the pilot stands in a jammer zone) the front always sends `avoid`: no answer, no flight. Picking again withdraws a pending request
+and its cuts. Every change goes out as `route.request` and is kept for the snapshot.
 
 **Server to client**
 
 | Type | Status | Content |
 |---|---|---|
-| `snapshot` | done | on connect, filtered for the viewer: viewer (callsign, role), scenario, nominal zones, clock, cuts, and per mission its constraints (grid, zones, concerned jammers and threats), status, latest plan (or null), latest drone state (or null) |
+| `snapshot` | done | on connect, filtered for the viewer: viewer (callsign, role), scenario, nominal zones, clock, cuts, and per mission its constraints (grid, zones, concerned jammers and threats), status, latest plan (or null), latest drone state (or null), route request (or null) |
 | `clock` | done | sim time, factor, paused; on change only |
 | `cut.scheduled`, `cut.confirmed`, `cut.cancelled` | done | the cut (`requested_for`: the mission it was asked for, if any) |
 | `mission.created` | done | the full mission (drone fields from the pilot); a new `snapshot` follows, then a notification to the pilot and the first `plan.updated` |
 | `mission.updated` | done | the mission with its new points and departure; a new `snapshot` follows for every client (plan back to null until the next `plan.updated`) |
 | `threat.added`, `threat.removed` | done | the threat (or its id) and the missions it concerns; a new `snapshot` follows, then notifications to the command and the pilots, then the new `plan.updated` |
 | `mission.status` | done | mission id; `planned`, `flying`, `arrived` |
-| `notification` | done | `to` (callsign), text, optional action (the button to show and the cut it confirms) |
+| `notification` | done | `to` (callsign), text, optional action: `cut.confirm` with the cut, or `route.decide` with the mission whose request awaits an answer |
+| `route.request` | done | the route request of a mission: kind, cut ids, saving, deadline, `on_timeout`, status (`pending`, `accepted`, `refused`), `decided_by` |
 | `ack`, `error` | done | `req_id`, reason on error |
 | `plan.updated` | done | see above; after every change to the cuts of a jammer that concerns the mission, while it is `planned`; arrives after the command's `ack` |
 | `drone.state` | done | mission id, position, action, battery used, delay, route revision; every tick in flight |
@@ -788,10 +835,12 @@ Server to client:
 |---|---|---|
 | `cut.schedule` | done | jammer, start, end, optional mission it is asked for |
 | `cut.cancel` | done | cut id |
-| `cut.confirm` | done | cut id |
+| `cut.confirm` | done | cut id; command only |
 | `mission.request` | done | `launch`, `target`, `departure_s` (a past one means as soon as possible); the mission id is `M<n>`, the first one free |
-| `mission.update` | done | mission id, `launch`, `target`, `departure_s`; only while `planned` |
-| `mission.launch` | done | mission id |
+| `mission.update` | done | mission id, `launch`, `target`, `departure_s`, optional `cross_radars` (routes may fly through radar zones, never jammers; omitted keeps it); only while `planned`; drops the route request and its cuts |
+| `route.choose` | done | mission id, `kind` (`fastest`, `one_cut`, `safe`), `on_timeout`: plan B if refused or unanswered (`avoid`: detour, default; `cross`: straight through the jammers anyway); its pilot only |
+| `route.decide` | done | mission id, `accept`; command only |
+| `mission.launch` | done | mission id; its pilot only |
 | `clock.set` | done | factor and/or paused |
 | `inject.delay` | done | mission id, `delay_s`: hold the flying drone where it is (demo twist) |
 | `threat.add` | done | `kind` (`radar`, `jammer`, `avoid`), `pos`; `radius_m` for a radar or a zone to avoid, `eirp_w` and `bands` for a jammer; optional `position_error_m` (not for a zone to avoid) |
@@ -836,6 +885,7 @@ The defaults below do not change the layout; they live in the planner or in `saf
 | Launch on a `preview` plan | rejected ("the plan relies on a cut not confirmed yet") |
 | Battery left for a fallback | `plan_fallback` allows a full `battery_max_s`; the battery already used is not deducted |
 | Replan lead time | 3 wall-clock seconds (`PLAN_LEAD_WALL_S`); two queued plans can exceed it |
+| Pilot minimum signal (41) | `link_min_dbm` per drone, default -100 dBm (quoted sensitivities of drone control receivers run from about -95 to -110 dBm; to set per drone with the team). 3D only: in 2D free space the range at -100 dBm is far past any grid |
 | Directional jammers | hard beam edge, sidelobes required (`sidelobe_db`), friendly jammers only, k < 1 rejected, not used in `demo.json` |
 | Route smoothing | greedy string pulling, farthest point first, between the points of the SIPP route only (a better line through the middle of a straight run can be missed); holds kept |
 | Planner choices made in step 3 | SIPP and a 30 s / 5 s takeoff sweep, cuts must save more than 1 s, cells forbidden if any part may touch a zone, radar is a hard ban, margins 30 s / 60 s as constants in `plan.py` |

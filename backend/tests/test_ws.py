@@ -39,16 +39,16 @@ def test_snapshot_then_commands(scenario: Scenario) -> None:
         scheduled, notification, ack = receive(ws), receive(ws), receive(ws)
         assert scheduled["seq"] == 1
         assert scheduled["payload"]["type"] == "cut.scheduled"
-        assert notification["payload"]["to"] == "EW-J3"
+        assert notification["payload"]["to"] == "CMD"
         assert ack["payload"] == {"type": "ack", "req_id": "r1"}
 
         cut_id = scheduled["payload"]["cut"]["id"]
         confirm = {"type": "cut.confirm", "actor": "CMD", "cut": cut_id}
         ws.send_json({"req_id": "r2", "command": confirm})
-        error = receive(ws)["payload"]
-        assert error["type"] == "error"
-        assert error["req_id"] == "r2"
-        assert "only the operator" in error["reason"]
+        confirmed, order, ack = receive(ws), receive(ws), receive(ws)
+        assert confirmed["payload"]["type"] == "cut.confirmed"
+        assert order["payload"]["to"] == "EW-J3"
+        assert ack["payload"] == {"type": "ack", "req_id": "r2"}
 
 
 def test_events_reach_every_client_and_bad_messages_get_an_error(scenario: Scenario) -> None:
@@ -109,18 +109,24 @@ def test_each_role_sees_its_own_part(two_missions: Scenario) -> None:
         pilot_scenario = seen["pilot"]["scenario"]
         assert [m["id"] for m in pilot_scenario["missions"]] == ["M1"]
         assert [j["id"] for j in pilot_scenario["friendly_jammers"]] == ["J3"]
-        assert seen["pilot"]["nominal_zones"] == []
+        # Reference footprints of what concerns M1, drawn under the pilot's own zones.
+        assert sorted(z["threat"] for z in seen["pilot"]["nominal_zones"]) == ["E1", "J3", "R1"]
         assert [p["callsign"] for p in pilot_scenario["pilots"]] == ["PILOT-1"]
         assert [p["callsign"] for p in seen["ew"]["scenario"]["pilots"]] == ["PILOT-2"]
         assert [p["callsign"] for p in seen["cmd"]["scenario"]["pilots"]] == ["PILOT-1", "PILOT-2"]
         assert [z["threat"] for z in seen["ew"]["nominal_zones"]] == ["J4"]
         assert seen["ew"]["scenario"]["enemy_threats"] == []
 
-        # A cut of J4 reaches its operator and the command, not the pilot of M1.
+        # A cut of J4 reaches its operator and the command, not the pilot of M1. The command
+        # confirms it; only then does the operator get the order to carry it out.
         command.send_json(schedule("CMD", "J4"))
-        assert receive(command)["payload"]["type"] == "cut.scheduled"
+        scheduled = receive(command)["payload"]
+        assert scheduled["type"] == "cut.scheduled"
+        assert receive(operator)["payload"]["type"] == "cut.scheduled"
+        confirm = {"type": "cut.confirm", "actor": "CMD", "cut": scheduled["cut"]["id"]}
+        command.send_json({"req_id": "r1", "command": confirm})
         to_operator = [receive(operator)["payload"] for _ in range(2)]
-        assert [p["type"] for p in to_operator] == ["cut.scheduled", "notification"]
+        assert [p["type"] for p in to_operator] == ["cut.confirmed", "notification"]
 
         # The next event the pilot gets is the clock, not the J4 cut.
         command.send_json({"req_id": "r2", "command": {"type": "clock.set", "actor": "CMD"}})

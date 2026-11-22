@@ -228,6 +228,52 @@
       "title": "CancelCut",
       "type": "object"
     },
+    "ChooseRoute": {
+      "additionalProperties": false,
+      "description": "The pilot picks one of the route choices of its current plan.\n\nA choice needing cuts asks the command, which answers until a deadline; ``on_timeout``\nsays what happens if it has not by then.",
+      "properties": {
+        "type": {
+          "const": "route.choose",
+          "default": "route.choose",
+          "title": "Type",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "mission": {
+          "title": "Mission",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "fastest",
+            "one_cut",
+            "safe"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "on_timeout": {
+          "default": "avoid",
+          "enum": [
+            "cross",
+            "avoid"
+          ],
+          "title": "On Timeout",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "actor",
+        "mission",
+        "kind"
+      ],
+      "title": "ChooseRoute",
+      "type": "object"
+    },
     "ClientMessage": {
       "additionalProperties": false,
       "properties": {
@@ -246,6 +292,8 @@
               "mission.launch": "#/$defs/LaunchMission",
               "mission.request": "#/$defs/RequestMission",
               "mission.update": "#/$defs/UpdateMission",
+              "route.choose": "#/$defs/ChooseRoute",
+              "route.decide": "#/$defs/DecideRoute",
               "threat.add": "#/$defs/AddThreat",
               "threat.remove": "#/$defs/RemoveThreat"
             },
@@ -266,6 +314,12 @@
             },
             {
               "$ref": "#/$defs/UpdateMission"
+            },
+            {
+              "$ref": "#/$defs/ChooseRoute"
+            },
+            {
+              "$ref": "#/$defs/DecideRoute"
             },
             {
               "$ref": "#/$defs/LaunchMission"
@@ -340,6 +394,7 @@
     },
     "ConfirmCut": {
       "additionalProperties": false,
+      "description": "Only the command confirms a cut; the jammer operator then carries it out.",
       "properties": {
         "type": {
           "const": "cut.confirm",
@@ -483,6 +538,38 @@
       "title": "CutScheduled",
       "type": "object"
     },
+    "DecideRoute": {
+      "additionalProperties": false,
+      "description": "The command accepts or refuses the pending route request of a mission.",
+      "properties": {
+        "type": {
+          "const": "route.decide",
+          "default": "route.decide",
+          "title": "Type",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "mission": {
+          "title": "Mission",
+          "type": "string"
+        },
+        "accept": {
+          "title": "Accept",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "actor",
+        "mission",
+        "accept"
+      ],
+      "title": "DecideRoute",
+      "type": "object"
+    },
     "Drone": {
       "additionalProperties": false,
       "properties": {
@@ -498,6 +585,12 @@
           "description": "EIRP of the pilot's control link, watts.",
           "exclusiveMinimum": 0,
           "title": "Link Eirp W",
+          "type": "number"
+        },
+        "link_min_dbm": {
+          "default": -100.0,
+          "description": "Weakest control link signal the drone still uses, dBm (receiver sensitivity plus a margin). In 3D, cells where the pilot's signal is weaker are forbidden.",
+          "title": "Link Min Dbm",
           "type": "number"
         },
         "cruise_speed_mps": {
@@ -516,6 +609,7 @@
         "id",
         "band",
         "link_eirp_w",
+        "link_min_dbm",
         "cruise_speed_mps",
         "battery_max_s"
       ],
@@ -854,7 +948,7 @@
     },
     "LaunchMission": {
       "additionalProperties": false,
-      "description": "Only the mission pilot or the command post may launch.",
+      "description": "Only the mission pilot may launch: the command only answers cut requests.",
       "properties": {
         "type": {
           "const": "mission.launch",
@@ -912,6 +1006,12 @@
           "title": "Link Eirp W",
           "type": "number"
         },
+        "link_min_dbm": {
+          "default": -100.0,
+          "description": "Weakest control link signal the drone still uses, dBm (receiver sensitivity plus a margin). In 3D, cells where the pilot's signal is weaker are forbidden.",
+          "title": "Link Min Dbm",
+          "type": "number"
+        },
         "cruise_speed_mps": {
           "exclusiveMinimum": 0,
           "title": "Cruise Speed Mps",
@@ -928,6 +1028,12 @@
           "minimum": 0,
           "title": "Departure S",
           "type": "number"
+        },
+        "cross_radars": {
+          "default": false,
+          "description": "The pilot accepts being seen: routes may cross radar zones (never jammers).",
+          "title": "Cross Radars",
+          "type": "boolean"
         }
       },
       "required": [
@@ -938,9 +1044,11 @@
         "target",
         "band",
         "link_eirp_w",
+        "link_min_dbm",
         "cruise_speed_mps",
         "battery_max_s",
-        "departure_s"
+        "departure_s",
+        "cross_radars"
       ],
       "title": "Mission",
       "type": "object"
@@ -1102,13 +1210,26 @@
             }
           ],
           "description": "Latest drone state; None before take-off."
+        },
+        "request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RouteRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Route the pilot picked and its answer; None before a pick."
         }
       },
       "required": [
         "constraints",
         "status",
         "plan",
-        "drone"
+        "drone",
+        "request"
       ],
       "title": "MissionView",
       "type": "object"
@@ -1154,21 +1275,45 @@
     },
     "NotificationAction": {
       "additionalProperties": false,
-      "description": "Command the recipient is expected to send back, shown as a button.",
+      "description": "Command the recipient is expected to send back, shown as a button.\n\n``cut.confirm`` names a cut; ``route.decide`` names a mission whose route request awaits\nan answer (accept or refuse).",
       "properties": {
         "command": {
-          "const": "cut.confirm",
+          "enum": [
+            "cut.confirm",
+            "route.decide"
+          ],
           "title": "Command",
           "type": "string"
         },
         "cut": {
-          "title": "Cut",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cut"
+        },
+        "mission": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mission"
         }
       },
       "required": [
         "command",
-        "cut"
+        "cut",
+        "mission"
       ],
       "title": "NotificationAction",
       "type": "object"
@@ -1248,7 +1393,8 @@
             "preview",
             "approved",
             "fallback",
-            "baseline"
+            "baseline",
+            "straight"
           ],
           "title": "Status",
           "type": "string"
@@ -1278,6 +1424,14 @@
           },
           "title": "Profile",
           "type": "array"
+        },
+        "choices": {
+          "description": "Routes the pilot may pick, fastest first, safe last. Empty once it flies.",
+          "items": {
+            "$ref": "#/$defs/RouteChoice"
+          },
+          "title": "Choices",
+          "type": "array"
         }
       },
       "required": [
@@ -1288,7 +1442,8 @@
         "metrics",
         "baseline_route",
         "optimised_route",
-        "profile"
+        "profile",
+        "choices"
       ],
       "title": "PlanUpdated",
       "type": "object"
@@ -1394,6 +1549,31 @@
       "title": "ProfilePoint",
       "type": "object"
     },
+    "ProposedCut": {
+      "additionalProperties": false,
+      "description": "A cut a route needs: jammer off on [start, end], safety margins included.",
+      "properties": {
+        "jammer": {
+          "title": "Jammer",
+          "type": "string"
+        },
+        "start_s": {
+          "title": "Start S",
+          "type": "number"
+        },
+        "end_s": {
+          "title": "End S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "jammer",
+        "start_s",
+        "end_s"
+      ],
+      "title": "ProposedCut",
+      "type": "object"
+    },
     "ReferenceLink": {
       "additionalProperties": false,
       "description": "Control link assumed for the nominal footprint of a jammer, seen without any mission.",
@@ -1483,6 +1663,83 @@
       "title": "RequestMission",
       "type": "object"
     },
+    "RouteChoice": {
+      "additionalProperties": false,
+      "description": "One route the pilot may pick. Only ``safe`` is flyable without the command's answer.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "fastest",
+            "one_cut",
+            "safe"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "cuts": {
+          "description": "New cuts the route needs; none for safe.",
+          "items": {
+            "$ref": "#/$defs/ProposedCut"
+          },
+          "title": "Cuts",
+          "type": "array"
+        },
+        "route": {
+          "items": {
+            "$ref": "#/$defs/RoutePoint"
+          },
+          "title": "Route",
+          "type": "array"
+        },
+        "flight_s": {
+          "description": "Time in the air, hover included, ground wait excluded.",
+          "title": "Flight S",
+          "type": "number"
+        },
+        "battery_used_pct": {
+          "description": "Of battery_max_s.",
+          "title": "Battery Used Pct",
+          "type": "number"
+        },
+        "saved_s": {
+          "description": "Flight time saved against the safe choice.",
+          "title": "Saved S",
+          "type": "number"
+        },
+        "saved_pct": {
+          "description": "Relative to the safe choice's flight time.",
+          "title": "Saved Pct",
+          "type": "number"
+        },
+        "radars": {
+          "description": "Radars whose zone the route crosses (only when the mission lets it).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Radars",
+          "type": "array"
+        },
+        "worth_asking": {
+          "default": true,
+          "description": "False: shown for comparison, but saves too little to ask the command a cut.",
+          "title": "Worth Asking",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "cuts",
+        "route",
+        "flight_s",
+        "battery_used_pct",
+        "saved_s",
+        "saved_pct",
+        "radars",
+        "worth_asking"
+      ],
+      "title": "RouteChoice",
+      "type": "object"
+    },
     "RoutePoint": {
       "additionalProperties": false,
       "description": "Position at time ``t``; ``action`` holds until the next point.",
@@ -1544,6 +1801,136 @@
         "amsl_m"
       ],
       "title": "RoutePoint",
+      "type": "object"
+    },
+    "RouteRequest": {
+      "additionalProperties": false,
+      "description": "The route a pilot picked and, if it needs cuts, the command's answer.",
+      "properties": {
+        "mission": {
+          "title": "Mission",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "fastest",
+            "one_cut",
+            "safe"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "cuts": {
+          "description": "Ids of the cuts asked for; none for safe.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Cuts",
+          "type": "array"
+        },
+        "saved_s": {
+          "description": "Flight time the route saves against the safe one.",
+          "title": "Saved S",
+          "type": "number"
+        },
+        "saved_pct": {
+          "title": "Saved Pct",
+          "type": "number"
+        },
+        "deadline_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Last moment for the command to answer; None when nothing is asked.",
+          "title": "Deadline S"
+        },
+        "on_timeout": {
+          "enum": [
+            "cross",
+            "avoid"
+          ],
+          "title": "On Timeout",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "accepted",
+            "refused"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "route": {
+          "description": "The route picked: flown as is if refused and cross.",
+          "items": {
+            "$ref": "#/$defs/RoutePoint"
+          },
+          "title": "Route",
+          "type": "array"
+        },
+        "jammers": {
+          "description": "Friendly jammers the route goes through.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Jammers",
+          "type": "array"
+        },
+        "decided_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Callsign that answered, or 'timeout' or 'launch'.",
+          "title": "Decided By"
+        }
+      },
+      "required": [
+        "mission",
+        "kind",
+        "cuts",
+        "saved_s",
+        "saved_pct",
+        "deadline_s",
+        "on_timeout",
+        "status",
+        "route",
+        "jammers",
+        "decided_by"
+      ],
+      "title": "RouteRequest",
+      "type": "object"
+    },
+    "RouteRequested": {
+      "additionalProperties": false,
+      "description": "A route request was made or answered.",
+      "properties": {
+        "type": {
+          "const": "route.request",
+          "default": "route.request",
+          "title": "Type",
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/RouteRequest"
+        }
+      },
+      "required": [
+        "type",
+        "request"
+      ],
+      "title": "RouteRequested",
       "type": "object"
     },
     "Scenario": {
@@ -1711,6 +2098,7 @@
                   "mission.updated": "#/$defs/MissionUpdated",
                   "notification": "#/$defs/Notification",
                   "plan.updated": "#/$defs/PlanUpdated",
+                  "route.request": "#/$defs/RouteRequested",
                   "threat.added": "#/$defs/ThreatAdded",
                   "threat.removed": "#/$defs/ThreatRemoved"
                 },
@@ -1749,6 +2137,9 @@
                 },
                 {
                   "$ref": "#/$defs/PlanUpdated"
+                },
+                {
+                  "$ref": "#/$defs/RouteRequested"
                 },
                 {
                   "$ref": "#/$defs/DroneState"
@@ -2040,7 +2431,7 @@
     },
     "UpdateMission": {
       "additionalProperties": false,
-      "description": "Move the launch or target of a mission still on the ground, or change its departure.\n\nSame rights as launch: its pilot or the command post.",
+      "description": "Move the launch or target of a mission still on the ground, change its departure, or\nwhether its routes may cross radars.\n\nSame rights as launch: its pilot only.",
       "properties": {
         "type": {
           "const": "mission.update",
@@ -2067,6 +2458,19 @@
           "minimum": 0,
           "title": "Departure S",
           "type": "number"
+        },
+        "cross_radars": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Let routes cross radar zones; None keeps the mission's choice.",
+          "title": "Cross Radars"
         }
       },
       "required": [

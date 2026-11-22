@@ -83,6 +83,7 @@ def snapshot(engine: Engine, audience: Audience, viewer: Viewer) -> Snapshot:
                 status=engine.state.missions[mission_id],
                 plan=runtime.plan,
                 drone=runtime.drone,
+                request=runtime.request,
             )
             for mission_id, runtime in engine.missions.items()
             if mission_id in scope.missions
