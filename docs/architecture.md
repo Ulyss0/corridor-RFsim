@@ -40,6 +40,8 @@ backend/src/corridor/
                   under a route; flat ground without a file
     zones3d.py    3D jamming zones: J/S per cell and per flight level through the terrain
                   (knife-edge diffraction), loss fields cached per emitter
+    heatmap.py    J/S heatmap of a mission on its planning grid, from the planner's own fields
+                  and denied cells, rendered as a PNG per level
     state.py      Cut, ClockState, WorldState (runtime state)
     commands.py   domain commands (discriminated union on "type")
     events.py     domain events (discriminated union on "type")
@@ -633,13 +635,30 @@ above: flying low costs the pilot link. About 0.2 to 0.7 s per mission, then cac
 recomputes nothing; a new threat only its own field). Enemy position margins and masks over
 time come with the 3D masks; `pilot_signal` is the input of the pilot minimum signal.
 
-**3D zones on the map** (`adapters/ws/outlines.py`, `GET /api/zones3d?mission_id=`). The cells
-the planner forbids at each level, per threat (`planner/layers.py:cells_by_threat`, the same
-widening and enemy margins as the masks), traced as polygons: GeoJSON features with `threat`,
-`kind`, `level` (index) and `level_m`. Empty in 2D. The front end fetches them again with each
-snapshot (a threat added or removed comes with one) and shows one level at a time; a friendly
-jammer's outline takes the colour of its cut state like the 2D disc. A radar is the same 2D
-shape at every level.
+**Map layers.** One question each, so the map and the planner cannot disagree:
+
+- Zones: where the tactical objects are. Jammers and radars as points, zones to avoid as
+  surfaces. No reach.
+- Terrain RF (`rf/coverage.py`, `GET /api/rf/coverage`): simplified reach. Jammers: received
+  power contours by polar ray casting, one height (20 m), rays every 10 degrees. Radars: their
+  disc, `radius_m + position_error_m`, as the heatmap and the planner see it. Not used by the
+  planner.
+- Heatmap (`domain/heatmap.py`, `GET /api/heatmap?mission_id=&level=&off=`): the planner's view.
+  J/S of the strongest jammer still on, per cell, from `zones3d.jamming_zones` (2D: flat ground at
+  the top level, the free-space values of the discs). Denied cells are exactly the planner's:
+  `cells_by_threat` in 3D, `shape_mask` of the 2D zones in 2D, so they reach about one cell past
+  the J/S threshold. `off` lists the friendly jammers in a cut at the instant shown; the front end
+  fetches again only when that set changes. Radars are a separate mask, never mixed into J/S (a
+  pilot may cross radars, never a jammer), shown even when the pilot crosses them. Classes against
+  `js_threshold_db`: safe, caution (within 6 dB), denied, radar. The PNG has 4 pixels per cell
+  side, J/S interpolated and denied cells traced with rounded edges.
+
+The traced outlines of the 3D cells (`adapters/ws/outlines.py`, `GET /api/zones3d`) are no
+longer drawn: the heatmap replaces them. Still to align: the hover probe (`/api/rf/probe`) runs
+its own model at 20 m. A jammer is off on the heatmap for its whole confirmed cut, while the
+planner shrinks the cut by its margins: near the start and end of a cut, the map shows a corridor
+the planner does not use yet. Radars masked by the terrain (line of sight) are to come in the
+planner, the heatmap and Terrain RF together.
 
 **Forbidden cells.** Cuts are piecewise constant in time, so `masks.py` precomputes one mask per
 interval between cut boundaries with numpy, not one per time step. A cell is forbidden when it

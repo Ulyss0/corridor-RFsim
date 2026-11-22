@@ -1,6 +1,5 @@
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
 import { ActionIcon, Button, SegmentedControl, Tooltip } from '@mantine/core'
-import type { FeatureCollection } from 'geojson'
 import {
   choosing,
   focusPoints,
@@ -12,7 +11,7 @@ import {
 } from '../domain/view'
 import { useViewTime } from '../hooks/useSimNow'
 import { levelColor } from '../map/levels'
-import { COLORS, createMapView, ROUTE_COLORS, type DroneMark, type MapView } from '../map/mapView'
+import { COLORS, createMapView, HEATMAP_COLORS, ROUTE_COLORS, type DroneMark, type MapView } from '../map/mapView'
 import { useSelectedMission, useStore } from '../store'
 import { CrosshairIcon, DroneIcon, LayersIcon } from './Icons'
 import { MissionForm } from './sidebar/MissionForm'
@@ -68,8 +67,7 @@ export function MapPanel() {
   const [showHeatmap, setShowHeatmap] = useState(false)
   const [showRelief, setShowRelief] = useState(true)
   const [showBuildings, setShowBuildings] = useState(true)
-  // 3D: the selected mission's zones per flight level, from the server; one level shown.
-  const [zones3d, setZones3d] = useState<{ mission: string; zones: FeatureCollection } | null>(null)
+  // Heatmap: one flight level shown (always 0 in 2D).
   const [level, setLevel] = useState(0)
   const [is3D, setIs3D] = useState(false)
   const [legendOpen, setLegendOpen] = useState(false)
@@ -96,46 +94,21 @@ export function MapPanel() {
   const is3dScenario = snapshot?.scenario.terrain.mode === '3d'
   const levels = snapshot?.scenario.terrain.levels_m ?? []
 
-  // 3D zones of the selected mission: fetched again with each snapshot (threats added or removed
-  // come with one), shown one level at a time.
-  useEffect(() => {
-    if (!is3dScenario || !selected) return
-    let active = true
-    fetch(`/api/zones3d?mission_id=${encodeURIComponent(selected)}`)
-      .then((r) => (r.ok ? (r.json() as Promise<FeatureCollection>) : null))
-      .then((zones) => {
-        if (active && zones) setZones3d({ mission: selected, zones })
-      })
-      .catch(() => undefined)
-    return () => {
-      active = false
-    }
-  }, [is3dScenario, selected, snapshot])
-
-  const levelZones = useMemo<FeatureCollection | null>(() => {
-    if (!is3dScenario || !zones3d || zones3d.mission !== selected) return null
-    const features = zones3d.zones.features.filter((f) => f.properties?.level === level)
-    return { ...zones3d.zones, features }
-  }, [is3dScenario, zones3d, selected, level])
-
-  // Scene: every grid in view, the selected mission's zones over the nominal footprints. Grids
-  // and zones only come with the snapshot, so plans and drones do not redraw it.
+  // Scene: every grid in view and the selected mission's zones to avoid; threats are points
+  // (their reach is Terrain RF, what the planner avoids the Heatmap). Grids and zones only come
+  // with the snapshot, so plans and drones do not redraw it.
   useEffect(() => {
     if (!snapshot) return
     const constraints = snapshot.missions.map((m) => m.constraints)
     const mission = constraints.find((c) => c.mission === selected) ?? null
-    // A pilot sees one circle per jammer, its own; the command, the reference footprints too.
-    const pilot = snapshot.viewer.role === 'pilot'
     view.current?.setScene({
       scenario: snapshot.scenario,
       grids: constraints.map((c) => c.grid),
       missionGrid: mission?.grid ?? null,
       missionZones: mission?.zones ?? [],
-      nominalZones: pilot ? [] : snapshot.nominal_zones,
       movable,
-      levelZones,
     })
-  }, [snapshot, selected, movable, levelZones])
+  }, [snapshot, selected, movable])
 
   useEffect(() => {
     view.current?.setLayerVisibility({
@@ -162,24 +135,39 @@ export function MapPanel() {
     }
   }, [showRf, snapshot])
 
+  // Friendly jammers whose cut runs at the instant shown, as a key: the heatmap is fetched
+  // again when this set changes, not on every tick of the clock.
+  const offKey = useMemo(() => {
+    if (!snapshot) return ''
+    const all = Object.values(cuts)
+    return snapshot.scenario.friendly_jammers
+      .filter((j) => friendlyZoneState(j.id, all, t) === 'cut')
+      .map((j) => j.id)
+      .sort()
+      .join(',')
+  }, [snapshot, cuts, t])
+  const heatmapLevel = is3dScenario ? Math.min(level, Math.max(0, levels.length - 1)) : 0
+
   useEffect(() => {
     if (!showHeatmap) {
       view.current?.setRfHeatmap(null)
       return
     }
-    // J/S is against one pilot link: the selected mission's (the server falls back to the first)
+    // J/S against the selected mission's link (the server falls back to the first), on its
+    // planning grid: the cells the planner avoids.
     let active = true
-    const query = selected ? `?mission_id=${encodeURIComponent(selected)}` : ''
-    fetch(`/api/rf/heatmap${query}`)
+    const query = new URLSearchParams({ level: String(heatmapLevel), off: offKey })
+    if (selected) query.set('mission_id', selected)
+    fetch(`/api/heatmap?${query}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (active && data) view.current?.setRfHeatmap(data)
       })
-      .catch((err) => console.warn('RF heatmap load error:', err))
+      .catch((err) => console.warn('Heatmap load error:', err))
     return () => {
       active = false
     }
-  }, [showHeatmap, snapshot, selected])
+  }, [showHeatmap, snapshot, selected, heatmapLevel, offKey])
 
   useEffect(() => {
     if (!view.current) return
@@ -312,7 +300,7 @@ export function MapPanel() {
             variant={showZones ? 'light' : 'subtle'}
             color={showZones ? 'cyan' : 'gray'}
             onClick={() => setShowZones((v) => !v)}
-            title="Toggle jammer and radar zones"
+            title="Toggle tactical objects: jammers, radars, zones to avoid"
           >
             Zones
           </Button>
@@ -321,7 +309,7 @@ export function MapPanel() {
             variant={showRf ? 'light' : 'subtle'}
             color={showRf ? 'teal' : 'gray'}
             onClick={() => setShowRf((v) => !v)}
-            title="Toggle terrain-aware RF propagation contours"
+            title="Toggle the simplified reach of jammers and radars, terrain included"
           >
             Terrain RF
           </Button>
@@ -330,7 +318,7 @@ export function MapPanel() {
             variant={showHeatmap ? 'light' : 'subtle'}
             color={showHeatmap ? 'grape' : 'gray'}
             onClick={() => setShowHeatmap((v) => !v)}
-            title="Toggle continuous Jammer-to-Signal (J/S) heatmap"
+            title="Toggle J/S against the mission link: the cells the planner avoids"
           >
             Heatmap
           </Button>
@@ -410,12 +398,12 @@ export function MapPanel() {
           </Button>
         </div>
 
-        {is3dScenario && levels.length > 0 && (
-          <div className="map-hud-bar" title="3D: zones at one flight level; the route is coloured by level">
-            <span style={{ fontSize: 11, color: '#adb5bd', padding: '0 4px' }}>Zones at</span>
+        {showHeatmap && is3dScenario && levels.length > 0 && (
+          <div className="map-hud-bar" title="3D: the heatmap at one flight level; the route is coloured by level">
+            <span style={{ fontSize: 11, color: '#adb5bd', padding: '0 4px' }}>Heatmap at</span>
             <SegmentedControl
               size="xs"
-              value={String(level)}
+              value={String(heatmapLevel)}
               onChange={(v) => setLevel(Number(v))}
               data={levels.map((m, i) => ({
                 value: String(i),
@@ -480,18 +468,20 @@ function TacticalLegend({ onClose }: { readonly onClose: () => void }) {
 }
 
 const LEGEND: { label: string; color: string; kind: 'area' | 'line' | 'dash' }[] = [
-  { label: 'Friendly jammer on', color: COLORS.friendlyOn, kind: 'area' },
-  { label: 'Cut pending confirmation', color: COLORS.friendlyPending, kind: 'area' },
-  { label: 'Cut confirmed (passable)', color: COLORS.friendlyCut, kind: 'area' },
+  { label: 'Friendly jammer', color: COLORS.friendlyOn, kind: 'area' },
   { label: 'Enemy jammer', color: COLORS.enemy, kind: 'area' },
   { label: 'Radar', color: COLORS.radar, kind: 'area' },
-  { label: 'Building (brighter = taller)', color: '#ced4da', kind: 'area' },
   { label: 'Zone to avoid (not enforced yet)', color: COLORS.avoid, kind: 'area' },
+  { label: 'Building (brighter = taller)', color: '#ced4da', kind: 'area' },
   { label: 'Detour (all jammers on)', color: COLORS.baseline, kind: 'dash' },
   { label: 'Planned route', color: ROUTE_COLORS.approved, kind: 'line' },
   { label: 'Route awaiting confirmation', color: ROUTE_COLORS.preview, kind: 'line' },
   { label: 'Fallback route', color: ROUTE_COLORS.fallback, kind: 'line' },
-  { label: 'Friendly Jammer RF field', color: '#e03131', kind: 'area' },
-  { label: 'Enemy Jammer RF field', color: '#9c36b5', kind: 'area' },
-  { label: 'J/S Heatmap (Safe → Denied)', color: '#20c997', kind: 'area' },
+  { label: 'Terrain RF: friendly jammer reach', color: '#e03131', kind: 'area' },
+  { label: 'Terrain RF: enemy jammer reach', color: '#9c36b5', kind: 'area' },
+  { label: 'Terrain RF: radar coverage', color: COLORS.radar, kind: 'area' },
+  { label: 'Heatmap: link safe', color: HEATMAP_COLORS.safe, kind: 'area' },
+  { label: 'Heatmap: within 6 dB of losing the link', color: HEATMAP_COLORS.caution, kind: 'area' },
+  { label: 'Heatmap: link lost, the planner avoids it', color: HEATMAP_COLORS.denied, kind: 'area' },
+  { label: 'Heatmap: radar coverage', color: HEATMAP_COLORS.radar, kind: 'area' },
 ]

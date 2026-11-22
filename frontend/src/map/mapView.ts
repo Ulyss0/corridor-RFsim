@@ -50,6 +50,14 @@ export const COLORS = {
   drone: '#ffffff',
 }
 
+/** Heatmap classes, as the server paints them (``corridor.domain.heatmap``), for the legend. */
+export const HEATMAP_COLORS = {
+  safe: '#20c997',
+  caution: '#fab005',
+  denied: '#e03131',
+  radar: '#fd7e14',
+}
+
 /** Colour of each route choice, on the map and in the mission card. */
 export const CHOICE_COLORS: Record<ChoiceKind, string> = {
   fastest: '#be4bdb',
@@ -131,14 +139,11 @@ export interface Scene {
   scenario: Scenario
   /** Grid of every mission in view; the map fits them all. */
   grids: Grid[]
-  /** Zones of the selected mission, for its pilot, and its grid (for `forbidden: outside`). */
+  /** Grid of the selected mission. */
   missionGrid: Grid | null
+  /** Zones of the selected mission: only its zones to avoid are drawn. Jammers and radars are
+   * points; their reach is the Terrain RF layer, what the planner avoids the heatmap. */
   missionZones: Zone[]
-  /** Mission-independent footprints (command and operator views). */
-  nominalZones: Zone[]
-  /** 3D: the selected mission's zones at the chosen flight level (polygons with ``threat`` and
-   * ``kind``). They replace its 2D zones, except the zones to avoid, which stay 2D. */
-  levelZones?: FeatureCollection | null
   /** Missions whose route, launch and target open the mission form on a click (on the
    * ground, this viewer is their pilot). */
   movable: string[]
@@ -232,6 +237,8 @@ export function createMapView(container: HTMLElement): MapView {
   let states: Record<string, ZoneState> = {}
   let visibility: Required<LayerVisibility> = { grid: true, baseline: true, zones: true, rf: true, heatmap: false, relief: true, buildings: true }
   const markers: maplibregl.Marker[] = []
+  const threatMarkers = new Map<string, maplibregl.Marker>()
+  let friendlyIds = new Set<string>()
   const drones = new Map<string, maplibregl.Marker>()
   const requestMarkers: maplibregl.Marker[] = []
   let clickHandler: ((pos: Position) => void) | null = null
@@ -273,7 +280,8 @@ export function createMapView(container: HTMLElement): MapView {
     map.setLayoutProperty('zones-line', 'visibility', v(visibility.zones))
     map.setLayoutProperty('rf-coverage-fill', 'visibility', v(visibility.rf))
     map.setLayoutProperty('rf-coverage-line', 'visibility', v(visibility.rf))
-    map.setLayoutProperty('rf-safe-baseline', 'visibility', v(visibility.heatmap))
+    // The heatmap covers the mission grid only: no green "safe" past it.
+    map.setLayoutProperty('rf-safe-baseline', 'visibility', 'none')
     if (map.getLayer('rf-heatmap')) {
       map.setLayoutProperty('rf-heatmap', 'visibility', v(visibility.heatmap))
     }
@@ -294,15 +302,15 @@ export function createMapView(container: HTMLElement): MapView {
       return
     }
     map.addSource('rf-heatmap', { type: 'image', ...image })
-    // Below the grid, as the cells it replaces. Nearest resampling keeps each pixel a solid
-    // square at any zoom.
+    // Below the grid. The server already rounds the cells' edges; linear resampling keeps them
+    // smooth when zoomed in.
     map.addLayer(
       {
         id: 'rf-heatmap',
         type: 'raster',
         source: 'rf-heatmap',
         layout: { visibility: visibility.heatmap ? 'visible' : 'none' },
-        paint: { 'raster-resampling': 'nearest', 'raster-fade-duration': 0 },
+        paint: { 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
       },
       'grid-line',
     )
@@ -361,7 +369,7 @@ export function createMapView(container: HTMLElement): MapView {
       },
     })
 
-    for (const id of ['grid', 'nominal', 'zones', 'routes', 'rf-coverage']) {
+    for (const id of ['grid', 'zones', 'routes', 'rf-coverage']) {
       map.addSource(id, { type: 'geojson', data: pending[id] ?? empty() })
     }
 
@@ -399,18 +407,6 @@ export function createMapView(container: HTMLElement): MapView {
         'line-opacity': ['case', ['get', 'selected'], 1, 0.4],
         'line-dasharray': [4, 4],
       },
-    })
-    map.addLayer({
-      id: 'nominal-fill',
-      type: 'fill',
-      source: 'nominal',
-      paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['*', 0.5, ['get', 'opacity']] },
-    })
-    map.addLayer({
-      id: 'nominal-line',
-      type: 'line',
-      source: 'nominal',
-      paint: { 'line-color': ['get', 'color'], 'line-width': 1.5, 'line-dasharray': [3, 2] },
     })
     map.addLayer({
       id: 'rf-coverage-fill',
@@ -527,15 +523,17 @@ export function createMapView(container: HTMLElement): MapView {
     if (!scene) return
     const g = scene.missionGrid
     const outer = g ? [...gridBounds(g), gridBounds(g)[0]] : null
-    const level = scene.levelZones
-    const flat = level ? scene.missionZones.filter((z) => z.kind === 'avoid') : scene.missionZones
-    const levelFeatures: Feature[] = (level?.features ?? []).map((f) => {
-      const threat = String(f.properties?.threat ?? '')
-      const kind = f.properties?.kind as Zone['kind']
-      return { ...f, properties: { ...f.properties, ...kindStyle(kind, states[threat] ?? 'on') } }
-    })
-    setData('zones', { type: 'FeatureCollection', features: [...zoneFeatures(flat, outer), ...levelFeatures] })
-    setData('nominal', { type: 'FeatureCollection', features: zoneFeatures(scene.nominalZones, null) })
+    const avoid = scene.missionZones.filter((z) => z.kind === 'avoid')
+    setData('zones', { type: 'FeatureCollection', features: zoneFeatures(avoid, outer) })
+  }
+
+  /** Threat points follow the Zones toggle; a friendly jammer's dot takes its cut state. */
+  const renderThreats = () => {
+    for (const [id, marker] of threatMarkers) {
+      const el = marker.getElement()
+      el.style.display = visibility.zones ? '' : 'none'
+      if (friendlyIds.has(id)) el.style.background = kindStyle('friendly_jammer', states[id] ?? 'on').color
+    }
   }
 
   return {
@@ -570,8 +568,12 @@ export function createMapView(container: HTMLElement): MapView {
         markers.push(point(m.launch, `${m.pilot_callsign} (${m.id})`, '#4dabf7', movable ? { mission: m.id, point: 'launch' } : undefined))
         markers.push(point(m.target, `TARGET ${m.id}`, '#ffd43b', movable ? { mission: m.id, point: 'target' } : undefined))
       }
-      for (const j of scenario.friendly_jammers) markers.push(label(map, j.pos, `${j.id} · ${j.operator_callsign}`, COLORS.friendlyOn))
-      for (const t of scenario.enemy_threats) markers.push(label(map, t.pos, t.id, THREAT_COLOR[t.type]))
+      threatMarkers.forEach((m) => m.remove())
+      threatMarkers.clear()
+      friendlyIds = new Set(scenario.friendly_jammers.map((j) => j.id))
+      for (const j of scenario.friendly_jammers) threatMarkers.set(j.id, label(map, j.pos, `${j.id} · ${j.operator_callsign}`, COLORS.friendlyOn))
+      for (const t of scenario.enemy_threats) threatMarkers.set(t.id, label(map, t.pos, t.id, THREAT_COLOR[t.type]))
+      renderThreats()
     },
     setRequest({ launch, target, picking }) {
       requestMarkers.splice(0).forEach((m) => m.remove())
@@ -587,7 +589,7 @@ export function createMapView(container: HTMLElement): MapView {
     },
     setZoneStates(s) {
       states = s
-      renderZones()
+      renderThreats()
     },
     setRoutes(routes) {
       const levels = scene?.scenario.terrain.levels_m ?? []
@@ -686,6 +688,7 @@ export function createMapView(container: HTMLElement): MapView {
     setLayerVisibility(vis) {
       visibility = { ...visibility, ...vis }
       applyVisibility()
+      renderThreats()
     },
     set3D(enabled: boolean) {
       is3dMode = enabled
