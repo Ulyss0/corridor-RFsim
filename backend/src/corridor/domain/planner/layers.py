@@ -10,7 +10,9 @@ route points carry no height.
   as in 2D. A friendly jammer's zone is off during its cut windows (shrunk by the margins);
 - an enemy jammer's zone, widened further for its position error by the 2D margin
   e * k / |k - 1| (``corridor.domain.zones``), in whole cells;
-- a radar: its 2D disc at every level (masking radars by the terrain is still to do).
+- a radar: its 2D disc at every level (masking radars by the terrain is still to do);
+- the pilot's minimum signal: where the control link is below ``Mission.link_min_dbm``
+  (``link_cells``), widened by one cell like the jammer zones.
 
 Zones to avoid are left out, as in 2D. Climbing or descending between two levels takes their
 height difference at ``CLIMB_MPS``.
@@ -36,10 +38,13 @@ from corridor.domain.planner.masks import (
 from corridor.domain.scenario import EnemyJammer, Mission, Scenario
 from corridor.domain.state import Cut
 from corridor.domain.zones import ZoneKind, forbidden_shapes
-from corridor.domain.zones3d import forbidden, jamming_zones
+from corridor.domain.zones3d import forbidden, jamming_zones, link_lost
 
 CLIMB_MPS = 3.0
 """Climb and descent speed between levels (open decision: climb speed and its battery cost)."""
+
+LINK = "LINK"
+"""Id of the cells out of the pilot's reach, beside the threat ids."""
 
 Cells = npt.NDArray[np.bool_]
 """``[level, row, col]``."""
@@ -79,8 +84,7 @@ def forbidden_cells(
     scenario: Scenario, mission: Mission, grid: Grid
 ) -> tuple[dict[str, Cells], Cells]:
     """Cells each friendly jammer forbids, and those forbidden whatever the cuts."""
-    shape = (len(scenario.terrain.levels_m), grid.rows, grid.cols)
-    always: Cells = np.zeros(shape, dtype=np.bool_)
+    always: Cells = link_cells(scenario, mission, grid).copy()
     friendly: dict[str, Cells] = {}
     for threat, (kind, cells) in cells_by_threat(scenario, mission, grid).items():
         if kind == "friendly_jammer":
@@ -112,6 +116,11 @@ def cells_by_threat(
             disc = shape_mask(grid, zone, frame)
             out[zone.threat] = ("radar", np.repeat(disc[np.newaxis], levels, axis=0))
     return out
+
+
+def link_cells(scenario: Scenario, mission: Mission, grid: Grid) -> Cells:
+    """Cells where the pilot's signal is too weak at each level, widened by one cell."""
+    return grow(link_lost(scenario, mission, grid), 1)
 
 
 def grow(cells: Cells, n: int) -> Cells:

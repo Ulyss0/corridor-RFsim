@@ -56,6 +56,8 @@ export const HEATMAP_COLORS = {
   caution: '#fab005',
   denied: '#e03131',
   radar: '#fd7e14',
+  /** 3D: out of the pilot's reach (its signal below the drone's minimum). */
+  link: '#868e96',
 }
 
 /** Colour of each route choice, on the map and in the mission card. */

@@ -11,7 +11,15 @@ from corridor.domain.geo import Grid, LocalFrame, Position
 from corridor.domain.rf.diffraction import knife_edge_loss_db
 from corridor.domain.scenario import Antenna, Scenario, Terrain
 from corridor.domain.zones import mission_constraints, mission_shapes
-from corridor.domain.zones3d import Emitter, forbidden, jamming_zones, loss_field, received
+from corridor.domain.zones3d import (
+    Emitter,
+    forbidden,
+    jamming_zones,
+    link_lost,
+    loss_field,
+    pilot_signal,
+    received,
+)
 
 ORIGIN = Position(lat=48.0, lon=11.0)
 PIXEL_DEG = 1 / 3600
@@ -94,6 +102,34 @@ def test_a_ridge_shields_a_low_drone_not_a_high_one(ridge: tuple[Terrain, Grid])
     assert shielded[highest][behind] == pytest.approx(open_ground[highest][behind], abs=1)
     # In front of the ridge nothing changes.
     assert shielded[lowest][18, 2] == pytest.approx(open_ground[lowest][18, 2], abs=1)
+
+
+def test_the_pilot_link_is_lost_behind_a_ridge_at_low_level(
+    scenario: Scenario, ridge: tuple[Terrain, Grid]
+) -> None:
+    hilly, grid = ridge
+    pilot = LocalFrame(grid.origin).to_position(450, 1850)
+    mission = scenario.missions[0].model_copy(update={"launch": pilot})
+    behind = (18, 19)
+    lowest, highest = 0, len(hilly.levels_m) - 1
+    on_flat = scenario.model_copy(update={"terrain": Terrain(mode="3d")})
+    open_dbm = float(pilot_signal(on_flat, mission, grid)[lowest][behind])
+    # A threshold a little below the signal on open ground: only the ridge's shadow falls short.
+    mission = mission.model_copy(update={"link_min_dbm": open_dbm - 8})
+    on_ridge = scenario.model_copy(update={"terrain": hilly.model_copy(update={"mode": "3d"})})
+    lost = link_lost(on_ridge, mission, grid)
+    assert lost[lowest][behind]
+    assert not lost[highest][behind]
+    assert not lost[lowest][18, 2]  # in front of the ridge
+    assert not link_lost(on_flat, mission, grid).any()
+
+
+def test_a_mission_takes_the_link_threshold_of_its_drone(scenario: Scenario) -> None:
+    pilot = scenario.pilots[0]
+    drone = pilot.drone.model_copy(update={"link_min_dbm": -92.0})
+    m = pilot.model_copy(update={"drone": drone}).mission("M9", ORIGIN, ORIGIN, 0)
+    assert m.link_min_dbm == -92.0
+    assert scenario.missions[0].link_min_dbm == -100.0
 
 
 def test_loss_fields_are_cached_and_read_only(ridge: tuple[Terrain, Grid]) -> None:

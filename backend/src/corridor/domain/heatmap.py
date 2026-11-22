@@ -5,7 +5,8 @@ cannot disagree:
 
 - 3D: J/S per jammer and per level from ``corridor.domain.zones3d.jamming_zones``; denied cells
   from ``corridor.domain.planner.layers.cells_by_threat`` (widened by one cell, enemy position
-  margins included).
+  margins included); cells out of the pilot's reach from ``link_cells``, a mask of their own
+  (a weak link, not a jammer; forbidden whatever the cuts).
 - 2D: J/S on flat ground at the top level (the free-space values the 2D discs come from); denied
   cells from the 2D zones (``corridor.domain.planner.masks.shape_mask``), as ``timed_masks``.
 
@@ -28,7 +29,7 @@ import numpy.typing as npt
 from scipy.ndimage import gaussian_filter, zoom
 
 from corridor.domain.geo import Grid, LocalFrame
-from corridor.domain.planner.layers import cells_by_threat
+from corridor.domain.planner.layers import cells_by_threat, link_cells
 from corridor.domain.planner.masks import shape_mask
 from corridor.domain.rf.coverage import encode_png_rgba
 from corridor.domain.scenario import Mission, Scenario, Terrain
@@ -49,6 +50,7 @@ SAFE_RGBA = (0x20, 0xC9, 0x97, 70)
 CAUTION_RGBA = (0xFA, 0xB0, 0x05, 130)
 DENIED_RGBA = (0xE0, 0x31, 0x31, 170)
 RADAR_RGBA = (0xFD, 0x7E, 0x14, 170)
+LINK_RGBA = (0x86, 0x8E, 0x96, 150)
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,8 @@ class MissionHeatmap:
     """Cells the planner forbids for the jammers still on."""
     radar: Cells
     """Cells a radar covers (the planner avoids them unless the pilot chose to cross)."""
+    link: Cells
+    """3D: cells out of the pilot's reach, forbidden whatever the cuts; none in 2D."""
 
 
 def mission_heatmap(
@@ -68,10 +72,12 @@ def mission_heatmap(
     if scenario.terrain.mode == "3d":
         js_scenario = scenario
         denied = _denied_3d(scenario, mission, grid, off)
+        link = link_cells(scenario, mission, grid)
     else:
         top = scenario.terrain.levels_m[-1]
         js_scenario = scenario.model_copy(update={"terrain": Terrain(levels_m=(top,))})
         denied = _denied_2d(scenario, mission, grid, off)
+        link = np.zeros_like(denied)
     levels = denied.shape[0]
     js = np.full(denied.shape, -np.inf, dtype=np.float32)
     for jammer, field in jamming_zones(js_scenario, mission, grid).items():
@@ -82,7 +88,7 @@ def mission_heatmap(
     for shape in mission_shapes(scenario, mission):
         if shape.kind == "radar":
             radar |= shape_mask(grid, shape, frame)
-    return MissionHeatmap(js, denied, np.repeat(radar[np.newaxis], levels, axis=0))
+    return MissionHeatmap(js, denied, np.repeat(radar[np.newaxis], levels, axis=0), link)
 
 
 def _denied_3d(scenario: Scenario, mission: Mission, grid: Grid, off: frozenset[str]) -> Cells:
@@ -115,6 +121,7 @@ def heatmap_rgba(heatmap: MissionHeatmap, level: int, threshold_db: float) -> np
     rgba[...] = SAFE_RGBA
     rgba[smooth_js >= threshold_db - CAUTION_DB] = CAUTION_RGBA
     rgba[radar] = RADAR_RGBA
+    rgba[_rounded(heatmap.link[level])] = LINK_RGBA
     rgba[denied] = DENIED_RGBA  # a jammer is never crossed, a radar may be
     return np.ascontiguousarray(rgba[::-1])
 

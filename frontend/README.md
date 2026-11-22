@@ -51,11 +51,14 @@ src/
   - **Terrain RF** (`GET /api/rf/coverage`): the simplified reach of each jammer (received power
     contours, terrain included, at 20 m) and radar (its disc, range plus position error).
   - **Heatmap** (`GET /api/heatmap`): J/S against the selected mission's link on its planning
-    grid, the cells the planner avoids in red, radar coverage in orange. Fetched again when the
+    grid, the cells the planner avoids in red, radar coverage in orange, in 3D the cells out of
+    the pilot's reach in grey. Fetched again when the
     set of jammers in a cut at the instant shown changes. In 3D, a level selector picks the flight
     level; the selected route is coloured by flight level.
 - 3D scenarios (`terrain.mode: "3d"`): the mission detail shows the altitude profile (ground and
   drone above sea level, from `plan.profile`).
+- "Why this route" in the mission detail (`plan.reasons`: around, over, through during a cut,
+  through with the threat on), and one tag per reason on each route choice.
 - Commands: `clock.set` (start / pause / speed), `cut.schedule` (EW cut form: jammer, mission
   among those the jammer concerns, start, length; prefilled from the jammer or mission shown;
   closes when the cut is scheduled), `cut.confirm` (only enabled for the jammer's operator),

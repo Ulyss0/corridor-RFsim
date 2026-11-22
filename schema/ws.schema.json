@@ -574,6 +574,12 @@
           "title": "Link Eirp W",
           "type": "number"
         },
+        "link_min_dbm": {
+          "default": -100.0,
+          "description": "Weakest control link signal the drone still uses, dBm (receiver sensitivity plus a margin). In 3D, cells where the pilot's signal is weaker are forbidden.",
+          "title": "Link Min Dbm",
+          "type": "number"
+        },
         "cruise_speed_mps": {
           "exclusiveMinimum": 0,
           "title": "Cruise Speed Mps",
@@ -590,6 +596,7 @@
         "id",
         "band",
         "link_eirp_w",
+        "link_min_dbm",
         "cruise_speed_mps",
         "battery_max_s"
       ],
@@ -986,6 +993,12 @@
           "title": "Link Eirp W",
           "type": "number"
         },
+        "link_min_dbm": {
+          "default": -100.0,
+          "description": "Weakest control link signal the drone still uses, dBm (receiver sensitivity plus a margin). In 3D, cells where the pilot's signal is weaker are forbidden.",
+          "title": "Link Min Dbm",
+          "type": "number"
+        },
         "cruise_speed_mps": {
           "exclusiveMinimum": 0,
           "title": "Cruise Speed Mps",
@@ -1018,6 +1031,7 @@
         "target",
         "band",
         "link_eirp_w",
+        "link_min_dbm",
         "cruise_speed_mps",
         "battery_max_s",
         "departure_s",
@@ -1405,6 +1419,14 @@
           },
           "title": "Choices",
           "type": "array"
+        },
+        "reasons": {
+          "description": "Zones that shape the optimised route, in order along the way.",
+          "items": {
+            "$ref": "#/$defs/RouteReason"
+          },
+          "title": "Reasons",
+          "type": "array"
         }
       },
       "required": [
@@ -1416,7 +1438,8 @@
         "baseline_route",
         "optimised_route",
         "profile",
-        "choices"
+        "choices",
+        "reasons"
       ],
       "title": "PlanUpdated",
       "type": "object"
@@ -1697,6 +1720,14 @@
           "description": "False: shown for comparison, but saves too little to ask the command a cut.",
           "title": "Worth Asking",
           "type": "boolean"
+        },
+        "reasons": {
+          "description": "Zones that shape this route, in order along the way.",
+          "items": {
+            "$ref": "#/$defs/RouteReason"
+          },
+          "title": "Reasons",
+          "type": "array"
         }
       },
       "required": [
@@ -1708,7 +1739,8 @@
         "saved_s",
         "saved_pct",
         "radars",
-        "worth_asking"
+        "worth_asking",
+        "reasons"
       ],
       "title": "RouteChoice",
       "type": "object"
@@ -1774,6 +1806,73 @@
         "amsl_m"
       ],
       "title": "RoutePoint",
+      "type": "object"
+    },
+    "RouteReason": {
+      "additionalProperties": false,
+      "description": "One zone that shapes the route: on the straight line from launch to target, or crossed.",
+      "properties": {
+        "threat": {
+          "description": "Threat id; LINK for the cells out of the pilot's reach.",
+          "title": "Threat",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "friendly_jammer",
+            "enemy_jammer",
+            "radar",
+            "avoid",
+            "link"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "effect": {
+          "enum": [
+            "avoided",
+            "climbed_over",
+            "crossed_in_cut",
+            "crossed"
+          ],
+          "title": "Effect",
+          "type": "string"
+        },
+        "enter_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Crossings: when the route enters the zone.",
+          "title": "Enter S"
+        },
+        "exit_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Crossings: when it leaves it.",
+          "title": "Exit S"
+        }
+      },
+      "required": [
+        "threat",
+        "kind",
+        "effect",
+        "enter_s",
+        "exit_s"
+      ],
+      "title": "RouteReason",
       "type": "object"
     },
     "RouteRequest": {

@@ -66,14 +66,16 @@ from corridor.domain.events import (
     ThreatAdded,
     ThreatRemoved,
 )
-from corridor.domain.geo import Grid, LocalFrame
-from corridor.domain.planner.layers import forbidden_cells
+from corridor.domain.geo import LocalFrame
+from corridor.domain.planner.layers import LINK, cells_by_threat, link_cells
 from corridor.domain.planner.plan import MissionPlan, route_metrics
+from corridor.domain.reasons import choice_reasons, route_reasons
 from corridor.domain.safety import (
     Flight,
     LevelCells,
     cut_transitions,
     position_at,
+    route_threat,
     schedule_violation,
     takeoff_s,
 )
@@ -85,9 +87,8 @@ from corridor.domain.scenario import (
     EnemyThreat,
     Mission,
     Scenario,
-    Terrain,
 )
-from corridor.domain.state import Cut, WorldState
+from corridor.domain.state import Cut, WorldState, merge_cuts
 from corridor.domain.terrain import profile, with_altitude
 from corridor.domain.zones import (
     MissionConstraints,
@@ -125,6 +126,9 @@ LAUNCH_ACTOR = "launch"
 
 class CommandRejected(Exception):
     """The command breaks a domain rule. The message is shown to the sender."""
+
+
+SAFE_ROUTE = "Computing a safe route."
 
 
 @dataclass
@@ -183,9 +187,15 @@ class Engine:
         ids = {*concerned.jammers, *concerned.threats}
         cells = None
         if scenario.terrain.mode == "3d":
-            friendly, _ = forbidden_cells(scenario, mission, concerned.grid)
-            by_jammer = {j: c for j, c in friendly.items() if j in ids}
-            cells = LevelCells(concerned.grid, scenario.terrain.levels_m, by_jammer)
+            by_threat = cells_by_threat(scenario, mission, concerned.grid)
+            by_jammer = {
+                t: c for t, (kind, c) in by_threat.items() if kind == "friendly_jammer" and t in ids
+            }
+            blocked = {
+                t: c for t, (kind, c) in by_threat.items() if kind != "friendly_jammer" and t in ids
+            }
+            blocked[LINK] = link_cells(scenario, mission, concerned.grid)
+            cells = LevelCells(concerned.grid, scenario.terrain.levels_m, by_jammer, blocked)
         return MissionRuntime(
             mission=mission,
             constraints=concerned,
@@ -259,9 +269,7 @@ class Engine:
                 text = f"{mission.id}: no route to the target within battery."
                 self._publish([Notification(to=mission.pilot_callsign, text=text)])
                 return
-            runtime.plan = _plan_updated(
-                mission.id, revision, plan, self.scenario.terrain, runtime.constraints.grid
-            )
+            runtime.plan = self._plan_updated(runtime, revision, plan)
             self._publish([runtime.plan])
 
         return done
@@ -330,12 +338,20 @@ class Engine:
             zone = schedule_violation(
                 flight, now, runtime.frame, runtime.shapes, cuts, runtime.cells
             )
+            threat = None
+            if zone is None:
+                threat = route_threat(flight, now, runtime.frame, runtime.shapes, runtime.cells)
             if zone is not None:
-                flight.fallback_requested = True
                 text = (
                     f"{mission.drone_id} would cross {zone} outside a confirmed cut "
                     f"(late {flight.delay_s:.0f} s). Computing a safe route."
                 )
+            elif threat == LINK:
+                text = f"{mission.drone_id} would fly out of the pilot's reach. {SAFE_ROUTE}"
+            elif threat is not None:
+                text = f"New threat {threat} on the route of {mission.drone_id}. {SAFE_ROUTE}"
+            if zone is not None or threat is not None:
+                flight.fallback_requested = True
                 events.append(Notification(to=mission.pilot_callsign, text=text))
                 self._request_fallback(runtime, now)
         position, action = position_at(flight.route, flight.route_time(now))
@@ -391,13 +407,7 @@ class Engine:
                 self._publish([Notification(to=pilot, text=text)])
                 return
             now = self.clock.now()
-            runtime.plan = _plan_updated(
-                runtime.mission.id,
-                revision,
-                plan,
-                self.scenario.terrain,
-                runtime.constraints.grid,
-            )
+            runtime.plan = self._plan_updated(runtime, revision, plan)
             runtime.flight = Flight(
                 route=runtime.plan.optimised_route,  # as sent, with altitudes
                 revision=revision,
@@ -411,6 +421,36 @@ class Engine:
             self._publish([runtime.plan, Notification(to=pilot, text=text)])
 
         return done
+
+    def _plan_updated(
+        self, runtime: MissionRuntime, revision: int, plan: MissionPlan
+    ) -> PlanUpdated:
+        """The plan as sent: route points with their altitude above sea level, the profile,
+        and the zones that shape each route."""
+        terrain, grid, mission = self.scenario.terrain, runtime.constraints.grid, runtime.mission
+        cuts = merge_cuts(c for c in self.state.cuts.values() if runtime.concerns(c.jammer))
+        windows = [(c.jammer, c.start_s, c.end_s) for c in cuts]
+        where = (mission.launch, mission.target, runtime.shapes)
+        return PlanUpdated(
+            mission=mission.id,
+            revision=revision,
+            status=plan.status,
+            metrics=plan.metrics,
+            baseline_route=with_altitude(terrain, grid, plan.baseline_route),
+            optimised_route=with_altitude(terrain, grid, plan.optimised_route),
+            profile=profile(terrain, plan.optimised_route, grid),
+            # Each route choice with its altitude above sea level too, as the planned route.
+            choices=[
+                c.model_copy(
+                    update={
+                        "route": with_altitude(terrain, grid, c.route),
+                        "reasons": choice_reasons(c, *where, windows, runtime.cells),
+                    }
+                )
+                for c in plan.choices
+            ],
+            reasons=route_reasons(plan.optimised_route, *where, windows, runtime.cells),
+        )
 
     def _publish(self, events: list[Event]) -> None:
         for event in events:
@@ -957,23 +997,3 @@ class Engine:
         mission = runtime.mission
         text = f"{mission.drone_id} held {command.delay_s:.0f} s by {command.actor}."
         return [Notification(to=mission.pilot_callsign, text=text)]
-
-
-def _plan_updated(
-    mission_id: str, revision: int, plan: MissionPlan, terrain: Terrain, grid: Grid
-) -> PlanUpdated:
-    """The plan as sent: route points with their altitude above sea level, and the profile."""
-    return PlanUpdated(
-        mission=mission_id,
-        revision=revision,
-        status=plan.status,
-        metrics=plan.metrics,
-        baseline_route=with_altitude(terrain, grid, plan.baseline_route),
-        optimised_route=with_altitude(terrain, grid, plan.optimised_route),
-        profile=profile(terrain, plan.optimised_route, grid),
-        # Each route choice with its altitude above sea level too, as the planned route.
-        choices=[
-            c.model_copy(update={"route": with_altitude(terrain, grid, c.route)})
-            for c in plan.choices
-        ],
-    )

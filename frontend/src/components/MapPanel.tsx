@@ -484,4 +484,5 @@ const LEGEND: { label: string; color: string; kind: 'area' | 'line' | 'dash' }[]
   { label: 'Heatmap: within 6 dB of losing the link', color: HEATMAP_COLORS.caution, kind: 'area' },
   { label: 'Heatmap: link lost, the planner avoids it', color: HEATMAP_COLORS.denied, kind: 'area' },
   { label: 'Heatmap: radar coverage', color: HEATMAP_COLORS.radar, kind: 'area' },
+  { label: "Heatmap: out of the pilot's reach (3D)", color: HEATMAP_COLORS.link, kind: 'area' },
 ]

@@ -53,6 +53,7 @@ backend/src/corridor/
                   plan_fallback() (from the drone position in flight, no cut)
       smooth.py   string pulling of the grid route on the same masks: fewer points, never in a zone
     safety.py     Flight (route, delay, holds, battery), safety rule, cut start/end transitions
+    reasons.py    why a route goes where it goes: the zones that shape it, what it does about each
   engine/
     clock.py      SimClock: accelerated clock with an injectable wall-clock source
     engine.py     Engine: commands, one MissionRuntime per mission (plan, flight, drone),
@@ -513,9 +514,14 @@ Rules enforced today:
   (`inject.delay`) it stays where it is; held time in the air counts on the battery.
 - Safety rule, every tick: the rest of the route, shifted by the delay, may only be in a friendly
   jammer zone inside a confirmed cut, with the planner margins (2 s of tolerance for sampling).
-  Otherwise (drone late, cut cancelled) the engine requests a `fallback` plan from the drone
-  position (`plan_fallback`: no cut, take off now) and switches the flight to it. The pilot gets a
-  notification at each step. No safe route: the drone keeps its route and the pilot is told.
+  It may not enter an enemy jammer or radar zone either, nor in 3D a cell out of the pilot's reach
+  (`route_threat`): a threat the command adds while the drone flies. Otherwise (drone late, cut
+  cancelled, new threat on the route) the engine requests a `fallback` plan from the drone
+  position (`plan_fallback`: no cut, take off now) and switches the flight to it. A drone the new
+  zone already covers first flies straight to the nearest cell free at its level
+  (`escape_cell`), then the search starts there. A threat away from the rest of the route
+  changes nothing in flight. The pilot gets a notification at each step. No safe route: the
+  drone keeps its route and the pilot is told.
 
 ## Planner
 
@@ -531,7 +537,9 @@ say which cuts are taken into account. One function covers every case:
 **3D planning** (`terrain.mode: "3d"`, `domain/planner/layers.py`). One layer of time masks per
 flight level. A cell is forbidden at a level by a jammer's 3D zone widened by one cell (zones are
 evaluated at cell centres), an enemy jammer's zone widened further by its 2D position margin
-e * k / |k - 1| in whole cells, or a radar's 2D disc (every level). Zones to avoid stay out;
+e * k / |k - 1| in whole cells, a radar's 2D disc (every level), or the pilot's minimum signal:
+where the control link from the pilot falls below `link_min_dbm` (per drone, default -100 dBm,
+open decision 41), widened by one cell (`link_cells`). Zones to avoid stay out;
 friendly zones are off during their shrunk cut windows. SIPP then also moves one level up or
 down in place, at 3 m/s (`CLIMB_MPS`, open decision 39; climbing costs its flight time). The
 search starts at the lowest level (the drone's level for a fallback) and ends over the target
@@ -545,8 +553,12 @@ buildings): pilot on the Tsim Sha Tsui waterfront, target in Quarry Bay, friendl
 on the harbour crossing, enemy jammer (1 W) on Victoria Peak. Detour 432 s climbing to 250 m
 (up to 560 m above sea level over the towers), 308 s through the harbour cut: 29 % saved, where
 2D gives 7 %. A pilot standing among the towers (inland Tsim Sha Tsui) gets no route at all: the
-city shadows a 2 m antenna. Not yet: the pilot's minimum signal, radars masked by terrain,
-a vertical speed or battery cost of its own for climbing.
+city shadows a 2 m antenna. With the pilot's minimum signal at -100 dBm, Victoria Peak puts
+40 % (250 m) to 67 % (30 m) of the Hong Kong grid out of the pilot's reach, about 0.2 % of
+Munich's at 30 m. Neither demo route changes: near a jammer, a weak link already fails the J/S
+test. The threshold matters where there is no jammer: a valley or a street behind a tower
+block. Not yet: radars masked by terrain, a vertical speed or battery cost of its own for
+climbing.
 
 **Search: SIPP (safe interval path planning)** (`domain/planner/astar.py`).
 - Grid of 100 m cells, one altitude layer, 8 neighbours at cruise speed (a diagonal takes
@@ -633,7 +645,8 @@ flat ground the top level gives the 2D disc. On the Munich demo, J3 denies at 30
 grid with a 2 m pilot antenna and 13 % with a 10 m mast, against the 2D disc (9 %) at 120 m and
 above: flying low costs the pilot link. About 0.2 to 0.7 s per mission, then cached (a cut
 recomputes nothing; a new threat only its own field). Enemy position margins and masks over
-time come with the 3D masks; `pilot_signal` is the input of the pilot minimum signal.
+time come with the 3D masks. `link_lost`: where `pilot_signal` is below the mission's
+`link_min_dbm`, jammer or not.
 
 **Map layers.** One question each, so the map and the planner cannot disagree:
 
@@ -649,9 +662,11 @@ time come with the 3D masks; `pilot_signal` is the input of the pilot minimum si
   `cells_by_threat` in 3D, `shape_mask` of the 2D zones in 2D, so they reach about one cell past
   the J/S threshold. `off` lists the friendly jammers in a cut at the instant shown; the front end
   fetches again only when that set changes. Radars are a separate mask, never mixed into J/S (a
-  pilot may cross radars, never a jammer), shown even when the pilot crosses them. Classes against
-  `js_threshold_db`: safe, caution (within 6 dB), denied, radar. The PNG has 4 pixels per cell
-  side, J/S interpolated and denied cells traced with rounded edges.
+  pilot may cross radars, never a jammer), shown even when the pilot crosses them. In 3D, the
+  cells out of the pilot's reach (`link_cells`) are a mask of their own too: the planner forbids
+  them whatever the cuts, for a weak link rather than a jammer. Classes against
+  `js_threshold_db`: safe, caution (within 6 dB), denied, radar, out of reach. The PNG has 4
+  pixels per cell side, J/S interpolated and masks traced with rounded edges.
 
 The traced outlines of the 3D cells (`adapters/ws/outlines.py`, `GET /api/zones3d`) are no
 longer drawn: the heatmap replaces them. Still to align: the hover probe (`/api/rf/probe`) runs
@@ -659,6 +674,17 @@ its own model at 20 m. A jammer is off on the heatmap for its whole confirmed cu
 planner shrinks the cut by its margins: near the start and end of a cut, the map shows a corridor
 the planner does not use yet. Radars masked by the terrain (line of sight) are to come in the
 planner, the heatmap and Terrain RF together.
+
+**Route reasons** (`domain/reasons.py`, `reasons` on `plan.updated` and on each route choice).
+A zone shapes a route when it lies on the straight line from launch to target (at the lowest
+level in 3D) or when the route crosses it. For each, in order along the way: `avoided` (around
+it), `climbed_over` (3D: the ground track passes under its lowest-level footprint, at a level
+it does not reach), `crossed_in_cut` (inside a friendly zone only within a cut of that jammer;
+for a choice, its proposed cuts count), or `crossed` (a radar the mission may cross, a zone to
+avoid, a jammer crossed anyway), with entry and exit times for crossings. Zones are the
+planner's: shapes in 2D, per-level cells in 3D (`LINK` for the cells out of the pilot's reach).
+Zones to avoid are not enforced, so they only appear when crossed. The time the detours cost is
+in the metrics as a whole, not per zone. The engine computes them when it sends a plan.
 
 **Forbidden cells.** Cuts are piecewise constant in time, so `masks.py` precomputes one mask per
 interval between cut boundaries with numpy, not one per time step. A cell is forbidden when it
@@ -891,6 +917,7 @@ The defaults below do not change the layout; they live in the planner or in `saf
 | Launch on a `preview` plan | rejected ("the plan relies on a cut not confirmed yet") |
 | Battery left for a fallback | `plan_fallback` allows a full `battery_max_s`; the battery already used is not deducted |
 | Replan lead time | 3 wall-clock seconds (`PLAN_LEAD_WALL_S`); two queued plans can exceed it |
+| Pilot minimum signal (41) | `link_min_dbm` per drone, default -100 dBm (quoted sensitivities of drone control receivers run from about -95 to -110 dBm; to set per drone with the team). 3D only: in 2D free space the range at -100 dBm is far past any grid |
 | Directional jammers | hard beam edge, sidelobes required (`sidelobe_db`), friendly jammers only, k < 1 rejected, not used in `demo.json` |
 | Route smoothing | greedy string pulling, farthest point first, between the points of the SIPP route only (a better line through the middle of a straight run can be missed); holds kept |
 | Planner choices made in step 3 | SIPP and a 30 s / 5 s takeoff sweep, cuts must save more than 1 s, cells forbidden if any part may touch a zone, radar is a hard ban, margins 30 s / 60 s as constants in `plan.py` |

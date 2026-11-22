@@ -1,8 +1,9 @@
 """3D zones as map outlines: the cells the planner forbids, per flight level and per threat.
 
-Cells come from ``corridor.domain.planner.layers.cells_by_threat`` (widened, margins included),
-so the map shows what the planner avoids. Each set of cells becomes GeoJSON polygons; the grid
-is an equirectangular projection, so cell indices map to degrees linearly.
+Cells come from ``corridor.domain.planner.layers`` (``cells_by_threat``, widened, margins
+included, and ``link_cells``, threat ``LINK``), so the map shows what the planner avoids. Each
+set of cells becomes GeoJSON polygons; the grid is an equirectangular projection, so cell
+indices map to degrees linearly.
 """
 
 from __future__ import annotations
@@ -15,13 +16,14 @@ from rasterio.features import shapes
 from rasterio.transform import Affine
 
 from corridor.domain.geo import EARTH_RADIUS_M, Grid
-from corridor.domain.planner.layers import cells_by_threat
+from corridor.domain.planner.layers import LINK, cells_by_threat, link_cells
 from corridor.domain.scenario import Mission, Scenario
 
 
 def level_outlines(scenario: Scenario, mission: Mission, grid: Grid) -> dict[str, Any]:
-    """FeatureCollection of polygons with ``threat``, ``kind``, ``level`` (index, lowest first)
-    and ``level_m``. Empty in 2D."""
+    """FeatureCollection of polygons with ``threat``, ``kind`` (a zone kind, or ``link`` where
+    the pilot's signal is too weak), ``level`` (index, lowest first) and ``level_m``. Empty in
+    2D."""
     if scenario.terrain.mode != "3d":
         return {"type": "FeatureCollection", "features": []}
     origin = grid.origin
@@ -30,7 +32,11 @@ def level_outlines(scenario: Scenario, mission: Mission, grid: Grid) -> dict[str
     # Row 0 is the southern row: latitude grows with the row index.
     transform = Affine(deg_lon, 0.0, origin.lon, 0.0, deg_lat, origin.lat)
     features = []
-    for threat, (kind, cells) in cells_by_threat(scenario, mission, grid).items():
+    by_threat: dict[str, tuple[str, Any]] = {
+        LINK: ("link", link_cells(scenario, mission, grid)),
+        **cells_by_threat(scenario, mission, grid),
+    }
+    for threat, (kind, cells) in by_threat.items():
         for level, level_m in enumerate(scenario.terrain.levels_m):
             mask = cells[level]
             if not mask.any():
