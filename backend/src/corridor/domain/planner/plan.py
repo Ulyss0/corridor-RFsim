@@ -4,12 +4,14 @@ smoothed (``corridor.domain.planner.smooth``) on the masks it was searched on.""
 
 from __future__ import annotations
 
+import bisect
 import itertools
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
+from scipy.ndimage import distance_transform_edt
 
 from corridor.domain.events import (
     ChoiceKind,
@@ -23,7 +25,7 @@ from corridor.domain.events import (
 from corridor.domain.geo import Cell, Grid, LocalFrame, Position
 from corridor.domain.planner.astar import Step, earliest_path
 from corridor.domain.planner.layers import Cells, Layers, forbidden_cells, mission_layers
-from corridor.domain.planner.masks import shape_mask
+from corridor.domain.planner.masks import TimedMasks, shape_mask
 from corridor.domain.planner.smooth import smooth_route
 from corridor.domain.scenario import Mission, Scenario
 from corridor.domain.state import Cut, merge_cuts
@@ -399,19 +401,33 @@ def plan_fallback(
 
     The pilot stays at the launch point, so the zones are those of the mission; only the
     route starts elsewhere, at flight ``level`` in 3D. Used when the drone can no longer keep
-    its cut windows.
+    its cut windows, or when a threat added in flight lies on its route. A drone already inside
+    a forbidden cell (the threat appeared over it) first flies straight to the nearest free
+    cell at its level.
     """
     start, goal = grid.cell_of(position), grid.cell_of(mission.target)
     if start is None or goal is None:
         return None
     layers = mission_layers(scenario, mission, grid, [], now_s, now_s + mission.battery_max_s)
     level = min(level, len(layers.timed) - 1)
-    airborne = mission.model_copy(update={"launch": position, "departure_s": now_s})
     deadline = now_s + mission.battery_max_s
-    route = _search(grid, airborne, layers, start, goal, now_s, deadline, level)
+    # A drone caught in a zone (a threat added over it) first leaves by the nearest free cell.
+    exit_cell = escape_cell(layers.timed[level], start, now_s)
+    if exit_cell is None:
+        return None
+    alt = None if layers.altitudes is None else layers.altitudes[level]
+    prefix: list[RoutePoint] = []
+    depart, depart_s = position, now_s
+    if exit_cell != start:
+        prefix = [RoutePoint(lat=position.lat, lon=position.lon, t=now_s, action="fly", alt_m=alt)]
+        depart = grid.to_position(*_centre(grid, exit_cell))
+        leg_m = math.dist(grid.to_xy(position), _centre(grid, exit_cell))
+        depart_s = now_s + leg_m / mission.cruise_speed_mps
+    airborne = mission.model_copy(update={"launch": depart, "departure_s": depart_s})
+    route = _search(grid, airborne, layers, exit_cell, goal, depart_s, deadline, level)
     if route is None:
         return None
-    route = smooth_route(
+    route = prefix + smooth_route(
         route,
         grid,
         layers.timed,
@@ -425,6 +441,19 @@ def plan_fallback(
         baseline_route=route,
         optimised_route=route,
     )
+
+
+def escape_cell(timed: TimedMasks, start: Cell, now_s: float) -> Cell | None:
+    """``start`` if free at ``now_s``, else the nearest cell free then; None if none is."""
+    k = max(0, bisect.bisect_right(timed.edges, now_s) - 1)
+    mask = timed.masks[min(k, len(timed.masks) - 1)]
+    col, row = start
+    if not mask[row, col]:
+        return start
+    if mask.all():
+        return None
+    _, (rows, cols) = distance_transform_edt(mask, return_indices=True)
+    return int(cols[row, col]), int(rows[row, col])
 
 
 def flight_s(route: list[RoutePoint]) -> float:

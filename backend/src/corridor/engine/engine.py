@@ -67,13 +67,14 @@ from corridor.domain.events import (
     ThreatRemoved,
 )
 from corridor.domain.geo import Grid, LocalFrame
-from corridor.domain.planner.layers import forbidden_cells
+from corridor.domain.planner.layers import LINK, cells_by_threat, link_cells
 from corridor.domain.planner.plan import MissionPlan, route_metrics
 from corridor.domain.safety import (
     Flight,
     LevelCells,
     cut_transitions,
     position_at,
+    route_threat,
     schedule_violation,
     takeoff_s,
 )
@@ -125,6 +126,9 @@ LAUNCH_ACTOR = "launch"
 
 class CommandRejected(Exception):
     """The command breaks a domain rule. The message is shown to the sender."""
+
+
+SAFE_ROUTE = "Computing a safe route."
 
 
 @dataclass
@@ -183,9 +187,15 @@ class Engine:
         ids = {*concerned.jammers, *concerned.threats}
         cells = None
         if scenario.terrain.mode == "3d":
-            friendly, _ = forbidden_cells(scenario, mission, concerned.grid)
-            by_jammer = {j: c for j, c in friendly.items() if j in ids}
-            cells = LevelCells(concerned.grid, scenario.terrain.levels_m, by_jammer)
+            by_threat = cells_by_threat(scenario, mission, concerned.grid)
+            by_jammer = {
+                t: c for t, (kind, c) in by_threat.items() if kind == "friendly_jammer" and t in ids
+            }
+            blocked = {
+                t: c for t, (kind, c) in by_threat.items() if kind != "friendly_jammer" and t in ids
+            }
+            blocked[LINK] = link_cells(scenario, mission, concerned.grid)
+            cells = LevelCells(concerned.grid, scenario.terrain.levels_m, by_jammer, blocked)
         return MissionRuntime(
             mission=mission,
             constraints=concerned,
@@ -330,12 +340,20 @@ class Engine:
             zone = schedule_violation(
                 flight, now, runtime.frame, runtime.shapes, cuts, runtime.cells
             )
+            threat = None
+            if zone is None:
+                threat = route_threat(flight, now, runtime.frame, runtime.shapes, runtime.cells)
             if zone is not None:
-                flight.fallback_requested = True
                 text = (
                     f"{mission.drone_id} would cross {zone} outside a confirmed cut "
                     f"(late {flight.delay_s:.0f} s). Computing a safe route."
                 )
+            elif threat == LINK:
+                text = f"{mission.drone_id} would fly out of the pilot's reach. {SAFE_ROUTE}"
+            elif threat is not None:
+                text = f"New threat {threat} on the route of {mission.drone_id}. {SAFE_ROUTE}"
+            if zone is not None or threat is not None:
+                flight.fallback_requested = True
                 events.append(Notification(to=mission.pilot_callsign, text=text))
                 self._request_fallback(runtime, now)
         position, action = position_at(flight.route, flight.route_time(now))

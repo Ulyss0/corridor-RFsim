@@ -43,6 +43,9 @@ from corridor.domain.zones3d import forbidden, jamming_zones, link_lost
 CLIMB_MPS = 3.0
 """Climb and descent speed between levels (open decision: climb speed and its battery cost)."""
 
+LINK = "LINK"
+"""Id of the cells out of the pilot's reach, beside the threat ids."""
+
 Cells = npt.NDArray[np.bool_]
 """``[level, row, col]``."""
 

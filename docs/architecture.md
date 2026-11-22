@@ -511,9 +511,14 @@ Rules enforced today:
   (`inject.delay`) it stays where it is; held time in the air counts on the battery.
 - Safety rule, every tick: the rest of the route, shifted by the delay, may only be in a friendly
   jammer zone inside a confirmed cut, with the planner margins (2 s of tolerance for sampling).
-  Otherwise (drone late, cut cancelled) the engine requests a `fallback` plan from the drone
-  position (`plan_fallback`: no cut, take off now) and switches the flight to it. The pilot gets a
-  notification at each step. No safe route: the drone keeps its route and the pilot is told.
+  It may not enter an enemy jammer or radar zone either, nor in 3D a cell out of the pilot's reach
+  (`route_threat`): a threat the command adds while the drone flies. Otherwise (drone late, cut
+  cancelled, new threat on the route) the engine requests a `fallback` plan from the drone
+  position (`plan_fallback`: no cut, take off now) and switches the flight to it. A drone the new
+  zone already covers first flies straight to the nearest cell free at its level
+  (`escape_cell`), then the search starts there. A threat away from the rest of the route
+  changes nothing in flight. The pilot gets a notification at each step. No safe route: the
+  drone keeps its route and the pilot is told.
 
 ## Planner
 
