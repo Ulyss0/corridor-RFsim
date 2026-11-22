@@ -13,6 +13,7 @@ from pydantic import Field, model_validator
 from corridor.domain.events import ChoiceKind, OnTimeout
 from corridor.domain.geo import Position
 from corridor.domain.model import Model
+from corridor.domain.scenario import LostLinkAction
 
 
 class ScheduleCut(Model):
@@ -54,6 +55,10 @@ class RequestMission(Model):
     departure_s: float = Field(
         ge=0, description="Earliest departure; one in the past means as soon as possible."
     )
+    lost_link: LostLinkAction = Field(
+        default="rth",
+        description="Failsafe instruction if control link is lost: rth, continue or land.",
+    )
 
 
 class UpdateMission(Model):
@@ -73,6 +78,12 @@ class UpdateMission(Model):
     )
     cross_radars: bool | None = Field(
         default=None, description="Let routes cross radar zones; None keeps the mission's choice."
+    )
+    lost_link: LostLinkAction | None = Field(
+        default=None,
+        description=(
+            "Change failsafe instruction if control link is lost; None keeps the mission's choice."
+        ),
     )
 
 

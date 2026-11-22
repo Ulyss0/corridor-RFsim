@@ -43,6 +43,10 @@ export type Lon = number;
  * Earliest departure; one in the past means as soon as possible.
  */
 export type DepartureS = number;
+/**
+ * Failsafe instruction if control link is lost: rth, continue or land.
+ */
+export type LostLink = "rth" | "continue" | "land";
 export type Type4 = "mission.update";
 export type Actor4 = string;
 export type Mission1 = string;
@@ -54,6 +58,10 @@ export type DepartureS1 = number;
  * Let routes cross radar zones; None keeps the mission's choice.
  */
 export type CrossRadars = boolean | null;
+/**
+ * Change failsafe instruction if control link is lost; None keeps the mission's choice.
+ */
+export type LostLink1 = ("rth" | "continue" | "land") | null;
 export type Type5 = "route.choose";
 export type Actor5 = string;
 export type Mission2 = string;
@@ -170,6 +178,10 @@ export type DepartureS2 = number;
  * The pilot accepts being seen: routes may cross radar zones (never jammers).
  */
 export type CrossRadars1 = boolean;
+/**
+ * Failsafe instruction if control link is lost: rth, continue or land.
+ */
+export type LostLink2 = "rth" | "continue" | "land";
 export type Type18 = "mission.updated";
 export type Type19 = "threat.added";
 export type Threat1 = EnemyRadar | EnemyJammer | AvoidZone;
@@ -343,6 +355,10 @@ export type ExitS = number | null;
  */
 export type Reasons = RouteReason[];
 /**
+ * Failsafe instruction if control link is lost (rth, continue, land).
+ */
+export type LostLink3 = "rth" | "continue" | "land";
+/**
  * Routes the pilot may pick, fastest first, safe last. Empty once it flies.
  */
 export type Choices = RouteChoice[];
@@ -350,6 +366,10 @@ export type Choices = RouteChoice[];
  * Zones that shape the optimised route, in order along the way.
  */
 export type Reasons1 = RouteReason[];
+/**
+ * Failsafe instruction if control link is lost (rth, continue, land).
+ */
+export type LostLink4 = "rth" | "continue" | "land";
 export type Type28 = "route.request";
 export type Mission10 = string;
 export type Kind4 = "fastest" | "one_cut" | "safe";
@@ -618,6 +638,7 @@ export interface RequestMission {
   launch: Position;
   target: Position1;
   departure_s: DepartureS;
+  lost_link?: LostLink;
 }
 /**
  * Where the pilot stands and the drone takes off.
@@ -651,6 +672,7 @@ export interface UpdateMission {
   target: Position1;
   departure_s: DepartureS1;
   cross_radars?: CrossRadars;
+  lost_link?: LostLink1;
 }
 /**
  * The pilot picks one of the route choices of its current plan.
@@ -865,6 +887,7 @@ export interface Mission6 {
   battery_max_s: BatteryMaxS;
   departure_s: DepartureS2;
   cross_radars: CrossRadars1;
+  lost_link: LostLink2;
 }
 /**
  * A mission on the ground got new points or a new departure; its plan is dropped and a
@@ -1002,6 +1025,7 @@ export interface PlanUpdated {
   profile: Profile;
   choices: Choices;
   reasons: Reasons1;
+  lost_link: LostLink4;
 }
 /**
  * This interface was referenced by `CorridorWs`'s JSON-Schema
@@ -1058,6 +1082,7 @@ export interface RouteChoice {
   radars: Radars;
   worth_asking: WorthAsking;
   reasons: Reasons;
+  lost_link: LostLink3;
 }
 /**
  * A cut a route needs: jammer off on [start, end], safety margins included.

@@ -166,12 +166,25 @@ class Drone(Model):
     battery_max_s: float = Field(gt=0, description="Flight time on a full battery.")
 
 
+LostLinkAction = Literal["rth", "continue", "land"]
+"""Failsafe instruction if control link is lost:
+rth: Return to Home (backtrack along safe path to launch).
+continue: Maintain autonomous track to target.
+land: Immediate precautionary landing."""
+
+
 class Pilot(Model):
     callsign: str
     drone: Drone
 
     def mission(
-        self, mission_id: str, launch: Position, target: Position, departure_s: float
+        self,
+        mission_id: str,
+        launch: Position,
+        target: Position,
+        departure_s: float,
+        cross_radars: bool = False,
+        lost_link: LostLinkAction = "rth",
     ) -> Mission:
         return Mission(
             id=mission_id,
@@ -179,6 +192,8 @@ class Pilot(Model):
             launch=launch,
             target=target,
             departure_s=departure_s,
+            cross_radars=cross_radars,
+            lost_link=lost_link,
             **_drone_fields(self.drone),
         )
 
@@ -206,6 +221,10 @@ class Mission(Model):
     cross_radars: bool = Field(
         default=False,
         description="The pilot accepts being seen: routes may cross radar zones (never jammers).",
+    )
+    lost_link: LostLinkAction = Field(
+        default="rth",
+        description="Failsafe instruction if control link is lost: rth, continue or land.",
     )
 
 

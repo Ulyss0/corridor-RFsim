@@ -1025,6 +1025,17 @@
           "description": "The pilot accepts being seen: routes may cross radar zones (never jammers).",
           "title": "Cross Radars",
           "type": "boolean"
+        },
+        "lost_link": {
+          "default": "rth",
+          "description": "Failsafe instruction if control link is lost: rth, continue or land.",
+          "enum": [
+            "rth",
+            "continue",
+            "land"
+          ],
+          "title": "Lost Link",
+          "type": "string"
         }
       },
       "required": [
@@ -1039,7 +1050,8 @@
         "cruise_speed_mps",
         "battery_max_s",
         "departure_s",
-        "cross_radars"
+        "cross_radars",
+        "lost_link"
       ],
       "title": "Mission",
       "type": "object"
@@ -1431,6 +1443,17 @@
           },
           "title": "Reasons",
           "type": "array"
+        },
+        "lost_link": {
+          "default": "rth",
+          "description": "Failsafe instruction if control link is lost (rth, continue, land).",
+          "enum": [
+            "rth",
+            "continue",
+            "land"
+          ],
+          "title": "Lost Link",
+          "type": "string"
         }
       },
       "required": [
@@ -1443,7 +1466,8 @@
         "optimised_route",
         "profile",
         "choices",
-        "reasons"
+        "reasons",
+        "lost_link"
       ],
       "title": "PlanUpdated",
       "type": "object"
@@ -1737,6 +1761,17 @@
           "minimum": 0,
           "title": "Departure S",
           "type": "number"
+        },
+        "lost_link": {
+          "default": "rth",
+          "description": "Failsafe instruction if control link is lost: rth, continue or land.",
+          "enum": [
+            "rth",
+            "continue",
+            "land"
+          ],
+          "title": "Lost Link",
+          "type": "string"
         }
       },
       "required": [
@@ -1818,6 +1853,17 @@
           },
           "title": "Reasons",
           "type": "array"
+        },
+        "lost_link": {
+          "default": "rth",
+          "description": "Failsafe instruction if control link is lost (rth, continue, land).",
+          "enum": [
+            "rth",
+            "continue",
+            "land"
+          ],
+          "title": "Lost Link",
+          "type": "string"
         }
       },
       "required": [
@@ -1830,7 +1876,8 @@
         "saved_pct",
         "radars",
         "worth_asking",
-        "reasons"
+        "reasons",
+        "lost_link"
       ],
       "title": "RouteChoice",
       "type": "object"
@@ -2678,6 +2725,24 @@
           "default": null,
           "description": "Let routes cross radar zones; None keeps the mission's choice.",
           "title": "Cross Radars"
+        },
+        "lost_link": {
+          "anyOf": [
+            {
+              "enum": [
+                "rth",
+                "continue",
+                "land"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Change failsafe instruction if control link is lost; None keeps the mission's choice.",
+          "title": "Lost Link"
         }
       },
       "required": [
