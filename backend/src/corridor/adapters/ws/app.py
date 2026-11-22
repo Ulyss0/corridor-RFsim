@@ -248,13 +248,15 @@ def create_app(
             bridge = TakBridge(engine, *tak)
             engine.subscribe(bridge.on_event)
             tasks.append(asyncio.create_task(bridge.run()))
-        yield
-        for task in tasks:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        if planner:
-            planner.close()
+        try:
+            yield
+        finally:
+            for task in tasks:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            if planner:
+                planner.close()
 
     app = FastAPI(title="Corridor", lifespan=lifespan)
 
