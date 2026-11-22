@@ -15,7 +15,7 @@
 #
 # Images pinned by version tag + digest: OTS 1.8.3 (built 2026-11-11). Upstream ":master"
 # is a stale 1.5.14 build from 2025-10 with a RabbitMQ binding bug: do not use it.
-# To upgrade: change the version tag, pull, re-pin the digest (see README).
+# To upgrade: change the version tag, pull, re-pin the digest (see docs/tak.md).
 
 name: corridor-ots
 
