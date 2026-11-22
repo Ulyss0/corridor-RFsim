@@ -10,6 +10,7 @@ import { ListView } from './ListView'
 import { MissionDetail } from './MissionDetail'
 import { Notifications } from './Notifications'
 import { ObjectDetail } from './ObjectDetail'
+import { ThreatForm } from './ThreatForm'
 
 export function Sidebar() {
   const lastError = useStore((s) => s.lastError)
@@ -39,6 +40,8 @@ export function Sidebar() {
 function Body() {
   const panel = useStore((s) => s.panel)
   const cutOpen = useStore((s) => s.cutDraft !== null)
+  const threatOpen = useStore((s) => s.threatDraft.open)
+  if (threatOpen) return <ThreatForm />
   if (cutOpen) return <CutForm />
   if (panel.view === 'mission') {
     return (
@@ -58,8 +61,11 @@ function ActionBar() {
   const panel = useStore((s) => s.panel)
   const requestOpen = useStore((s) => s.requestDraft.open)
   const cutOpen = useStore((s) => s.cutDraft !== null)
+  const threatOpen = useStore((s) => s.threatDraft.open)
   const openRequest = useStore((s) => s.openRequest)
   const openCut = useStore((s) => s.openCut)
+  const openThreat = useStore((s) => s.openThreat)
+  const closeThreat = useStore((s) => s.closeThreat)
   if (!snapshot) return null
   const { scenario } = snapshot
   const isPilot = snapshot.viewer.role === 'pilot'
@@ -90,6 +96,17 @@ function ActionBar() {
           onClick={() => openRequest(lastLaunch())}
         >
           New mission
+        </Button>
+      )}
+      {isCommand && (
+        <Button
+          size="xs"
+          color="red"
+          leftSection={<PlusIcon size={14} />}
+          variant={threatOpen ? 'filled' : 'light'}
+          onClick={() => (threatOpen ? closeThreat() : openThreat())}
+        >
+          New threat
         </Button>
       )}
       {!isCommand && (
