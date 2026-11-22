@@ -529,11 +529,7 @@ class Engine:
         ]
         return [
             CutCancelled(cut=cut),
-            *(
-                Notification(to=pilot, text=text)
-                for pilot in recipients
-                if pilot != command.actor
-            ),
+            *(Notification(to=pilot, text=text) for pilot in recipients if pilot != command.actor),
         ]
 
     def _confirm_cut(self, command: ConfirmCut) -> list[Event]:
