@@ -450,6 +450,7 @@ class Engine:
                 for c in plan.choices
             ],
             reasons=route_reasons(plan.optimised_route, *where, windows, runtime.cells),
+            lost_link=plan.lost_link,
         )
 
     def _publish(self, events: list[Event]) -> None:
@@ -737,7 +738,11 @@ class Engine:
         if pilot is None:
             raise CommandRejected("only a pilot can request a mission")
         mission = pilot.mission(
-            self._next_mission_id(), command.launch, command.target, command.departure_s
+            self._next_mission_id(),
+            command.launch,
+            command.target,
+            command.departure_s,
+            lost_link=command.lost_link,
         )
         try:
             runtime = self._runtime_for(mission)
@@ -762,12 +767,14 @@ class Engine:
         cross_radars = (
             mission.cross_radars if command.cross_radars is None else command.cross_radars
         )
+        lost_link = mission.lost_link if command.lost_link is None else command.lost_link
         updated = mission.model_copy(
             update={
                 "launch": command.launch,
                 "target": command.target,
                 "departure_s": command.departure_s,
                 "cross_radars": cross_radars,
+                "lost_link": lost_link,
             }
         )
         try:

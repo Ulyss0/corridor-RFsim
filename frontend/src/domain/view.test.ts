@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Cut, Grid, Mission, Position, RouteReason, RoutePoint, Zone } from '../api/protocol'
 import {
+  LOST_LINK_LABELS,
   reasonTag,
   reasonText,
   bearingDeg,
@@ -243,5 +244,14 @@ describe('route reasons', () => {
       "Over the area out of the pilot's reach (flies above its zone)",
     )
     expect(reasonTag(reason({ effect: 'crossed_in_cut' }))).toBe('J3 in cut')
+  })
+})
+
+describe('lost link labels', () => {
+  it('defines metadata for all failsafe actions', () => {
+    expect(LOST_LINK_LABELS.rth.short).toBe('RTH')
+    expect(LOST_LINK_LABELS.continue.short).toBe('Continue')
+    expect(LOST_LINK_LABELS.land.short).toBe('Land')
+    expect(LOST_LINK_LABELS.rth.color).toBe('blue')
   })
 })

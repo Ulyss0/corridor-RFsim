@@ -647,3 +647,60 @@ def test_plan_b_straight_anyway_flies_through_the_jammer_on(
     assert published.optimised_route == flight.route
     assert published.revision == flight.revision
     assert engine.missions["M1"].plan == published
+
+
+def test_lost_link_instruction_delivered_with_plan_and_choices(
+    engine: Engine, replanner: FakeReplanner
+) -> None:
+    m1 = engine.scenario.missions[0]
+    assert m1.lost_link == "rth"
+    planned(engine, replanner)
+    plan = engine.missions["M1"].plan
+    assert plan is not None
+    assert plan.lost_link == "rth"
+    for choice in plan.choices:
+        assert choice.lost_link == "rth"
+
+    events = engine.submit(
+        UpdateMission(
+            actor=PILOT,
+            mission="M1",
+            launch=m1.launch,
+            target=m1.target,
+            departure_s=m1.departure_s,
+            lost_link="continue",
+        )
+    )
+    assert any(isinstance(e, MissionUpdated) for e in events)
+    assert engine.missions["M1"].mission.lost_link == "continue"
+    planned(
+        engine,
+        replanner,
+        replace(
+            choices_plan(),
+            lost_link="continue",
+            choices=[
+                c.model_copy(update={"lost_link": "continue"}) for c in choices_plan().choices
+            ],
+        ),
+    )
+    updated_plan = engine.missions["M1"].plan
+    assert updated_plan is not None
+    assert updated_plan.lost_link == "continue"
+    assert all(c.lost_link == "continue" for c in updated_plan.choices)
+
+
+def test_request_mission_with_custom_lost_link(engine: Engine) -> None:
+    m1 = engine.scenario.missions[0]
+    events = engine.submit(
+        RequestMission(
+            actor=PILOT,
+            launch=m1.launch,
+            target=m1.target,
+            departure_s=m1.departure_s,
+            lost_link="land",
+        )
+    )
+    created = next(e.mission for e in events if isinstance(e, MissionCreated))
+    assert created.lost_link == "land"
+    assert engine.missions[created.id].mission.lost_link == "land"

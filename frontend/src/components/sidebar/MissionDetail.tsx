@@ -3,7 +3,7 @@ import { Alert, Badge, Button, Group, Progress, Stack, Text } from '@mantine/cor
 import { send } from '../../api/client'
 import type { PlanUpdated } from '../../api/protocol'
 import { mockPlan } from '../../dev/mockPlan'
-import { choosing, clockLabel, missionOf, reasonText, routePhases, startsInside } from '../../domain/view'
+import { choosing, clockLabel, LOST_LINK_LABELS, missionOf, reasonText, routePhases, startsInside } from '../../domain/view'
 import { ROUTE_COLORS } from '../../map/mapView'
 import { useStore } from '../../store'
 import { STATUS_COLOR } from '../colors'
@@ -99,6 +99,12 @@ export function MissionDetail({ id }: { readonly id: string }) {
               {plan.status === 'fallback' ? 'Rerouted' : 'Take-off'} <b>{label(takeoff)}</b> · on target <b>{label(arrival)}</b>
             </Text>
           )}
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Failsafe (lost link):</Text>
+            <Badge size="xs" variant="light" color={LOST_LINK_LABELS[plan.lost_link].color} title={LOST_LINK_LABELS[plan.lost_link].detail}>
+              {LOST_LINK_LABELS[plan.lost_link].title}
+            </Badge>
+          </Group>
           {plan.reasons.length > 0 ? (
             <div>
               <Text size="xs" c="dimmed">Why this route</Text>
